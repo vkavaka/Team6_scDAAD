@@ -44,7 +44,7 @@ library(enrichR)
 ## Read seurat_object_after_clustering
 
 ```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
-seurat_obj <- readRDS("seurat_object_after_clustering.rds")
+seurat_obj <- readRDS("C:/Users/Doma/Desktop/RSTUDIO/ProjectAML - kopie - kopie/seurat_object_after_clustering.rds")
 seurat_obj
 table(Idents(seurat_obj))
 View(seurat_obj@meta.data)
@@ -456,5 +456,30 @@ enrich_postchemo_vs_prechemo_Prog <- r_enrichment(de_table = markers_Prog_postch
 ```
 ## enrichR cluster HSC postchemo_vs_prechemo
 ```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
-#enrich_postchemo_vs_prechemo_HSC <- r_enrichment(de_table = markers_HSC_postchemo_vs_prechemo,name_prefix = "postchemo_vs_prechemo_HSC", sample_names = c("Post-chemo", "Pre-chemo"),cluster = "HSC") #no terms
+enrich_postchemo_vs_prechemo_HSC <- r_enrichment(de_table = markers_HSC_postchemo_vs_prechemo,name_prefix = "postchemo_vs_prechemo_HSC", sample_names = c("Post-chemo", "Pre-chemo"),cluster = "HSC") #no terms
+```
+## Display the saved plots for cluster Prog postchemo vs prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+
+for (plot_name in names(enrich_postchemo_vs_prechemo_Prog$saved_plots)) {
+print(enrich_postchemo_vs_prechemo_Prog$saved_plots[[plot_name]])
+}
+
+```
+
+## Display the saved plots for cluster Prog AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+
+for (plot_name in names(enrich_leu_vs_ctrl_Prog$saved_plots)) {
+print(enrich_leu_vs_ctrl_Prog$saved_plots[[plot_name]])
+}
+
+```
+## Display the saved plots for cluster HSC AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+
+for (plot_name in names(enrich_leu_vs_ctrl_HSC$saved_plots)) {
+print(enrich_leu_vs_ctrl_HSC$saved_plots[[plot_name]])
+}
+
 ```
