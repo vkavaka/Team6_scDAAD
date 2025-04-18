@@ -44,7 +44,7 @@ library(enrichR)
 ## Read seurat_object_after_clustering
 
 ```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
-seurat_obj <- readRDS("C:/Users/Doma/Desktop/RSTUDIO/ProjectAML - kopie - kopie/seurat_object_after_clustering.rds")
+seurat_obj <- readRDS("seurat_object_after_clustering.rds")
 seurat_obj
 table(Idents(seurat_obj))
 View(seurat_obj@meta.data)
