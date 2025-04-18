@@ -1,0 +1,460 @@
+---
+title: "Ira_Tana_DGE_GSEA"
+author: "IH_TS"
+date: "2025-04-18"
+output:
+  html_document:
+    code_folding: hide
+    df_print: paged
+    highlights: pygments
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float:
+      collapsed: yes
+  pdf_document: 
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+##Install packages
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+install.packages('remotes')
+remotes::install_github("satijalab/seurat", "seurat5", quiet = TRUE)
+install.packages("renv")
+install.packages("Seurat")
+install.packages("ggplot2")
+install.packages("ggrepel")
+install.packages("enrichR")
+
+```
+##Import packages
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+library(dplyr)
+library(magrittr)
+library(Seurat)
+library(ggplot2)
+library(ggrepel)
+library(enrichR)
+```
+
+## Read seurat_object_after_clustering
+
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+seurat_obj <- readRDS("seurat_object_after_clustering.rds")
+seurat_obj
+table(Idents(seurat_obj))
+View(seurat_obj@meta.data)
+```
+##DGE
+
+## Processing HSC cluster and find markers AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+subset_cluster_HSC <- subset(seurat_obj, idents = "HSC")
+table(subset_cluster_HSC@meta.data$group)
+Idents(subset_cluster_HSC) <- "group"
+
+
+#Find markers HSC
+
+markers_leu_vs_ctrl_HSC <- FindMarkers(subset_cluster_HSC,
+                                       ident.1 = "Leukemia",
+                                       ident.2 = "Healthy",min.pct=0.15)
+
+#Filter significant genes cluster HSC
+
+markers_leu_vs_ctrl_HSC <- markers_leu_vs_ctrl_HSC %>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::arrange(desc(avg_log2FC))
+
+```
+## Processing Prog cluster and find markers AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+subset_cluster_Prog <- subset(seurat_obj, idents = "Prog")
+table(subset_cluster_Prog@meta.data$group)
+Idents(subset_cluster_Prog) <- "group"
+
+#Find markers Prog
+markers_leu_vs_ctrl_Prog <- FindMarkers(subset_cluster_Prog,
+                                        ident.1 = "Leukemia",
+                                        ident.2 = "Healthy",min.pct=0.15)
+#Filter significant genes cluster Prog
+ markers_leu_vs_ctrl_Prog <- markers_leu_vs_ctrl_Prog %>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::arrange(desc(avg_log2FC))
+
+```
+## Processing HSC cluster and find markers postchemo vs prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+HSC_condition_obj <- subset_cluster_HSC
+table(Idents(HSC_condition_obj))
+Idents(HSC_condition_obj) <- "Condition"
+
+#Find markers HSC postchemo vs prechemo
+markers_HSC_postchemo_vs_prechemo <- FindMarkers(HSC_condition_obj, ident.1 = "post_chemo", ident.2 = "pre_chemo", min.pct=0.15)
+length(which(markers_HSC_postchemo_vs_prechemo$p_val_adj<0.05))
+
+#Filter significant genes cluster HSC postchemo vs prechemo
+markers_HSC_postchemo_vs_prechemo<- markers_HSC_postchemo_vs_prechemo%>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::arrange(desc(avg_log2FC))
+```
+
+## Processing Prog cluster and find markers postchemo vs prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+Prog_condition_obj <- subset_cluster_Prog
+table(Idents(Prog_condition_obj))
+Idents(Prog_condition_obj) <- "Condition"
+
+#Find markers Pog postchemo vs prechemo
+markers_Prog_postchemo_vs_prechemo <- FindMarkers(Prog_condition_obj, ident.1 = "post_chemo", ident.2 = "pre_chemo",min.pct=0.15)
+length(which(markers_Prog_postchemo_vs_prechemo$p_val_adj<0.05))
+
+#Filter significant genes cluster Prog postchemo vs prechemo
+markers_Prog_postchemo_vs_prechemo<- markers_Prog_postchemo_vs_prechemo%>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::arrange(desc(avg_log2FC))
+
+```
+##Save DE results
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+write.csv(markers_leu_vs_ctrl_HSC, "markers_leu_vs_ctrl_HSC.csv")
+write.csv(markers_leu_vs_ctrl_Prog, "markers_leu_vs_ctrl_Prog.csv")
+write.csv(markers_HSC_postchemo_vs_prechemo, "markers_HSC_postchemo_vs_prechemo.csv")
+write.csv(markers_Prog_postchemo_vs_prechemo, "markers_Prog_postchemo_vs_prechemo.csv")
+
+```
+## Volcano plots
+
+## Plot "Prog cluster, AML vs Control"
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+top_leu_vs_ctrl_Prog <- markers_leu_vs_ctrl_Prog 
+
+genes_Prog_leu_vs_ctrl_indexes <- c(1:10, (nrow(top_leu_vs_ctrl_Prog)-10):nrow(top_leu_vs_ctrl_Prog))
+genes_Prog_leu_vs_ctrl<- rownames(top_leu_vs_ctrl_Prog[genes_Prog_leu_vs_ctrl_indexes, ])
+
+top_leu_vs_ctrl_Prog <- top_leu_vs_ctrl_Prog |>
+  mutate(gene_name = row.names(top_leu_vs_ctrl_Prog), 
+         color = ifelse(top_leu_vs_ctrl_Prog$avg_log2FC<(-1)&top_leu_vs_ctrl_Prog$p_val_adj<0.05, 
+                        "blue", ifelse(top_leu_vs_ctrl_Prog$avg_log2FC>1&top_leu_vs_ctrl_Prog$p_val_adj<0.05, 
+                                       "red", 
+                                       "grey")))
+
+#Labeling genes
+label_genes_prog <-top_leu_vs_ctrl_Prog[top_leu_vs_ctrl_Prog$gene_name %in% genes_Prog_leu_vs_ctrl, ]
+#Plot
+p_leu_vs_ctrl_Prog <- ggplot(top_leu_vs_ctrl_Prog, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = color), alpha = 0.7) +
+  geom_text_repel(data = label_genes_prog,
+                  aes(label = gene_name),
+                  size = 5,
+                  max.overlaps = 100,
+                  segment.color = NA) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)) +
+  labs(
+    title = "Prog cluster, AML vs Control",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted p-value"
+  ) +
+  scale_color_identity()
+p_leu_vs_ctrl_Prog 
+#Save plot
+ggsave("p_leu_vs_ctrl_Prog.pdf", plot = p_leu_vs_ctrl_Prog, width = 10, height = 8)
+ggsave("p_leu_vs_ctrl_Prog.jpeg", plot = p_leu_vs_ctrl_Prog, width = 10, height = 8)
+```
+## Plot "HSC cluster, AML vs Control"
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+top_leu_vs_ctrl_HSC <- markers_leu_vs_ctrl_HSC
+
+genes_HSC_leu_vs_ctrl_indexes <- c(1:10, (nrow(top_leu_vs_ctrl_HSC)-10):nrow(top_leu_vs_ctrl_HSC))
+genes_HSC_leu_vs_ctrl<- rownames(top_leu_vs_ctrl_HSC[genes_HSC_leu_vs_ctrl_indexes, ])
+
+top_leu_vs_ctrl_HSC <- top_leu_vs_ctrl_HSC |>
+  mutate(gene_name = row.names(top_leu_vs_ctrl_HSC), 
+         color = ifelse(top_leu_vs_ctrl_HSC$avg_log2FC<(-1)&top_leu_vs_ctrl_HSC$p_val_adj<0.05,
+                        "blue", ifelse(top_leu_vs_ctrl_HSC$avg_log2FC>1&top_leu_vs_ctrl_HSC$p_val_adj<0.05,
+                                       "red",
+                                       "grey")))
+#Labeling genes
+label_genes_HSC <- top_leu_vs_ctrl_HSC[top_leu_vs_ctrl_HSC$gene_name %in% genes_HSC_leu_vs_ctrl, ]
+
+#Plot
+p_leu_vs_ctrl_HSC <- ggplot(top_leu_vs_ctrl_HSC, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = color), alpha = 0.7) +
+  geom_text_repel(data = label_genes_HSC,
+                  aes(label = gene_name),
+                  size = 6,
+                  max.overlaps = 100,
+                  segment.color = NA
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)) +
+  labs(
+    title = "HSC cluster, AML vs Control",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted p-value"
+  ) +
+  scale_color_identity()
+p_leu_vs_ctrl_HSC
+
+#Save plot
+ggsave("p_leu_vs_ctrl_HSC.pdf", plot = p_leu_vs_ctrl_HSC, width = 10, height = 8)
+ggsave("p_leu_vs_ctrl_HSC.jpeg", plot = p_leu_vs_ctrl_HSC, width = 10, height = 8)
+```
+## Plot "HSC cluster, AML post-chemo vs pre-chemo"
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+top_HSC_postchemo_vs_prechemo <- markers_HSC_postchemo_vs_prechemo 
+
+genes_HSC_postchemo_vs_prechemo_indexes <- c(1:3, (nrow(top_HSC_postchemo_vs_prechemo)-3):nrow(top_HSC_postchemo_vs_prechemo))
+genes_HSC_postchemo_vs_prechemo <- rownames(top_HSC_postchemo_vs_prechemo[genes_HSC_postchemo_vs_prechemo_indexes, ])
+
+top_HSC_postchemo_vs_prechemo <- top_HSC_postchemo_vs_prechemo |>
+  mutate(gene_name = row.names(top_HSC_postchemo_vs_prechemo), 
+         color = ifelse(top_HSC_postchemo_vs_prechemo$avg_log2FC<(-1)&top_HSC_postchemo_vs_prechemo$p_val_adj<0.05,
+                        "blue", ifelse(top_HSC_postchemo_vs_prechemo$avg_log2FC>1&top_HSC_postchemo_vs_prechemo$p_val_adj<0.05,
+                                       "red",
+                                       "grey")))
+#Labeling genes
+label_genes_HSC_post_vs_pre <- top_HSC_postchemo_vs_prechemo[top_HSC_postchemo_vs_prechemo$gene_name %in% genes_HSC_postchemo_vs_prechemo, ]
+
+#Plot
+p_leu_postchemo_vs_prechemo_HSC <- ggplot(top_HSC_postchemo_vs_prechemo, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = color), alpha = 0.7) +
+  geom_text_repel(data = label_genes_HSC_post_vs_pre,
+                  aes(label = gene_name),
+                  size = 5,
+                  max.overlaps = 100,
+                  segment.color = NA) +
+  
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)) +
+  labs(
+    title = "HSC cluster, AML post-chemo vs pre-chemo",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted p-value"
+  ) +
+  scale_color_identity()
+
+p_leu_postchemo_vs_prechemo_HSC
+
+#Save plot
+ggsave("p_leu_postchemo_vs_prechemo_HSC.pdf", plot = p_leu_postchemo_vs_prechemo_HSC, width = 10, height = 8)
+ggsave("p_leu_postchemo_vs_prechemo_HSC.jpeg", plot =p_leu_postchemo_vs_prechemo_HSC, width = 10, height = 8)
+
+```
+
+
+
+## Plot "Prog cluster, AML post-chemo vs pre-chemo"
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+top_Prog_postchemo_vs_prechemo <-markers_Prog_postchemo_vs_prechemo 
+
+genes_Prog_postchemo_vs_prechemo_indexes <- c(1:10, (nrow(top_Prog_postchemo_vs_prechemo)-10):nrow(top_Prog_postchemo_vs_prechemo))
+genes_Prog_postchemo_vs_prechemo<- rownames(top_Prog_postchemo_vs_prechemo[genes_Prog_postchemo_vs_prechemo_indexes, ])
+
+top_Prog_postchemo_vs_prechemo <- top_Prog_postchemo_vs_prechemo |>
+  mutate(gene_name = row.names(top_Prog_postchemo_vs_prechemo), 
+         color = ifelse(top_Prog_postchemo_vs_prechemo$avg_log2FC<(-1)&top_Prog_postchemo_vs_prechemo$p_val_adj<0.05,
+                        "blue", ifelse(top_Prog_postchemo_vs_prechemo$avg_log2FC>1&top_Prog_postchemo_vs_prechemo$p_val_adj<0.05,
+                                       "red",
+                                       "grey")))
+#Labeling genes
+label_genes_Prog_post_vs_pre <- top_Prog_postchemo_vs_prechemo[top_Prog_postchemo_vs_prechemo$gene_name %in% genes_Prog_postchemo_vs_prechemo, ]
+
+#Plot
+p_leu_postchemo_vs_prechemo_Prog <- ggplot(top_Prog_postchemo_vs_prechemo, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = color), alpha = 0.6) +
+  geom_text_repel(data = label_genes_Prog_post_vs_pre,
+                  aes(label = gene_name),
+                  size = 5,
+                  max.overlaps = 100,
+                  segment.color = NA
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18))+
+  labs(
+    title = "Prog cluster, AML post-chemo vs pre-chemo",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted p-value"
+  ) +
+  scale_color_identity()
+p_leu_postchemo_vs_prechemo_Prog
+
+#Save plot
+ggsave("p_leu_postchemo_vs_prechemo_Prog.pdf", plot = p_leu_postchemo_vs_prechemo_Prog, width = 10, height = 8)
+ggsave("p_leu_postchemo_vs_prechemo_Prog.jpeg", plot =p_leu_postchemo_vs_prechemo_Prog, width = 10, height = 8)
+```
+## Overrepresentation_enrichR
+##Import dbs
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+#dbs <- listEnrichrDbs()
+dbs <- c("GO_Biological_Process_2025", "KEGG_2021_Human", "MSigDB_Hallmark_2020")
+
+```
+##function - enrichR enrichment
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+#function - enrichR enrichment, 
+  #arguments:de_table,name_prefix, sample_names = c("Control", "Tumor"), cluster
+r_enrichment <- function(de_table, name_prefix, output_dir = "enrichr_results", 
+                         plot_title = NULL, sample_names = NULL, cluster = NULL, db_names = NULL) {
+  
+   if (!dir.exists(output_dir)) dir.create(output_dir)
+  
+  up_genes <- rownames(de_table[de_table$p_val_adj < 0.05 & de_table$avg_log2FC > 1, ])
+  down_genes <- rownames(de_table[de_table$p_val_adj < 0.05 & de_table$avg_log2FC < -1, ])
+  all_genes <- rownames(de_table[de_table$p_val_adj < 0.05, ])
+  
+# enrichR
+  up_enrich <- enrichr(up_genes, dbs)
+  down_enrich <- enrichr(down_genes, dbs)
+  all_enrich <- enrichr(all_genes, dbs)
+
+  # plot title
+  if (is.null(plot_title)) {
+    
+      db_labels <- c(
+      "GO_Biological_Process_2025" = "GO Biological Process",
+      "KEGG_2021_Human" = "KEGG",
+      "MSigDB_Hallmark_2020" = "MSigDB"
+    )
+db_title <- ifelse(is.null(db_names), "GO Biological Process", db_labels[db_names])
+    
+    plot_title <- paste(db_title, "enrichment analysis,",
+                        ifelse(!is.null(sample_names) & length(sample_names) == 2,
+                               paste(sample_names[1], "vs", sample_names[2]),
+                               "Samples Comparison"),
+                        ifelse(!is.null(cluster), paste("cluster", cluster), ""))
+  }
+  
+  saved_plots <- list()
+  
+  for (direction in c("up", "down", "all")) {
+    enrich_list <- switch(direction,
+                          up = up_enrich,
+                          down = down_enrich,
+                          all = all_enrich)
+    
+    gene_set <- switch(direction,
+                       up = up_genes,
+                       down = down_genes,
+                       all = all_genes)
+    
+    for (db in names(enrich_list)) {
+      df <- enrich_list[[db]]
+      
+      print(paste("Direction:", direction))
+      print(paste("DB:", db))
+      print(paste("Genes:", length(gene_set)))
+      print(head(gene_set))
+      print(paste("Rows in df:", if (!is.null(df)) nrow(df) else "NULL"))
+      
+      db_title <- db_labels[db]
+       if (!is.null(df) && nrow(df) > 0) {
+        write.csv(df, file = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, ".csv")), row.names = FALSE)
+        
+        # Overlap to numeric
+        df <- df %>%
+          mutate(Overlap = as.character(Overlap),
+                 GeneCountRatio = sapply(Overlap, function(x) {
+                   nums <- as.numeric(strsplit(x, "/")[[1]])
+                   if (length(nums) == 2) return(nums[1] / nums[2])
+                   else return(NA)  
+                 })) %>%
+          mutate(term = factor(Term, levels = rev(Term)),
+                 negLogP = -log10(Adjusted.P.value))
+        
+        top_terms <- df %>%
+          arrange(Adjusted.P.value) %>%
+          head(25)
+        
+        p <- ggplot(top_terms, aes(x = negLogP, y = term, color = Adjusted.P.value, size = GeneCountRatio)) +
+          geom_point() +
+          scale_color_gradient(low = "blue", high = "red") +
+          theme_minimal() +
+          labs(
+            title = paste(db_title, "enrichment analysis,", 
+                          ifelse(!is.null(sample_names) & length(sample_names) == 2,
+                                 paste(sample_names[1], "vs", sample_names[2]),
+                                 "Samples Comparison"),
+                          ifelse(!is.null(cluster), paste("cluster", cluster), "")),  
+            x = "-log10 Adjusted p-value",
+            y = "Term",
+            color = "adj. p-value",
+            size = "Gene Count Ratio"
+          ) +
+          theme(
+            plot.title = element_text(size = 16, face = "bold"),  
+            axis.title = element_text(size = 14),  
+            axis.text = element_text(size = 14),  
+            legend.title = element_text(size = 12),  
+            legend.text = element_text(size = 12)  
+          )
+        
+        saved_plots[[paste0(direction, "_", db)]] <- p
+        #different size
+        if (db == "GO_Biological_Process_2025") {
+          ggsave(filename = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, "_dotplot.pdf")), plot = p, width = 17, height = 7)
+          ggsave(filename = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, "_dotplot.jpeg")), plot = p, width = 17, height = 7)
+        } else {
+          ggsave(filename = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, "_dotplot.pdf")), plot = p, width = 12, height = 7)
+          ggsave(filename = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, "_dotplot.jpeg")), plot = p, width = 12, height = 7)
+        }
+      }
+    }
+  }
+  
+    return(list(
+    up = up_enrich,
+    down = down_enrich,
+    all = all_enrich,
+    saved_plots = saved_plots  
+  ))
+}
+
+```
+## enrichR cluster Prog
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+enrich_leu_vs_ctrl_Prog <- r_enrichment(de_table = markers_leu_vs_ctrl_Prog,
+                                        name_prefix = "leu_vs_ctrl_Prog", 
+                                        sample_names = c("AML", "Control"),
+                                       cluster = "Prog")
+```
+## enrichR cluster HSC
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+enrich_leu_vs_ctrl_HSC <- r_enrichment(de_table = markers_leu_vs_ctrl_HSC,
+                                        name_prefix = "leu_vs_ctrl_HSC", 
+                                        sample_names = c("AML", "Control"),
+                                        cluster = "HSC")
+```
+## enrichR cluster Prog postchemo_vs_prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+enrich_postchemo_vs_prechemo_Prog <- r_enrichment(de_table = markers_Prog_postchemo_vs_prechemo,
+                                       name_prefix = "postchemo_vs_prechemo_Prog", 
+                                       sample_names = c("Post-chemo", "Pre-chemo"),
+                                       cluster = "Prog")
+
+```
+## enrichR cluster HSC postchemo_vs_prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+#enrich_postchemo_vs_prechemo_HSC <- r_enrichment(de_table = markers_HSC_postchemo_vs_prechemo,name_prefix = "postchemo_vs_prechemo_HSC", sample_names = c("Post-chemo", "Pre-chemo"),cluster = "HSC") #no terms
+```
