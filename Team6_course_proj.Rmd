@@ -932,6 +932,422 @@ ggsave("p_leu_postchemo_vs_prechemo_Prog.pdf", plot = p_leu_postchemo_vs_prechem
 ggsave("p_leu_postchemo_vs_prechemo_Prog.jpeg", plot =p_leu_postchemo_vs_prechemo_Prog, width = 10, height = 8)
 ```
 
+## Common disregulated genes HSC and Prog, EnrichR 
+```{r}
+# Define the function to filter up/down regulated genes
+get_filtered_genes <- function(de_table, direction = "up", logfc_thresh = 1) {
+  if (direction == "up") {
+    selected_genes <- rownames(de_table[de_table$avg_log2FC >= logfc_thresh, ])
+  } else if (direction == "down") {
+    selected_genes <- rownames(de_table[de_table$avg_log2FC <= -logfc_thresh, ])
+  }
+  return(selected_genes)}
+  
+# Genes with log2FC >1 or <-1
+up_genes_prog <- get_filtered_genes(markers_leu_vs_ctrl_Prog, direction = "up")
+down_genes_prog <- get_filtered_genes(markers_leu_vs_ctrl_Prog, direction = "down")
+
+up_genes_hsc <- get_filtered_genes(markers_leu_vs_ctrl_HSC, direction = "up")
+down_genes_hsc <- get_filtered_genes(markers_leu_vs_ctrl_HSC, direction = "down")
+
+# Common genes
+common_up <- intersect(up_genes_prog, up_genes_hsc)
+common_down <- intersect(down_genes_prog, down_genes_hsc)
+
+
+cat("Common upregulated genes  Prog та HSC:", common_up, "\n")
+cat("Common downregulated genes Prog та HSC:", common_down, "\n")
+
+
+# Get upregulated and downregulated genes for Prog and HSC
+
+up_genes_prog <- get_filtered_genes(markers_leu_vs_ctrl_Prog, direction = "up")
+down_genes_prog <- get_filtered_genes(markers_leu_vs_ctrl_Prog, direction = "down")
+up_genes_hsc <- get_filtered_genes(markers_leu_vs_ctrl_HSC, direction = "up")
+down_genes_hsc <- get_filtered_genes(markers_leu_vs_ctrl_HSC, direction = "down")
+
+
+# Perform Enrichr analysis for upregulated genes with additional MSigDB database
+enrichr_up <- enrichr(common_up, databases = c("GO_Biological_Process_2021", "KEGG_2021_Human", "MSigDB_Hallmark_2020"))
+
+# Perform Enrichr analysis for downregulated genes with additional MSigDB database
+enrichr_down <- enrichr(common_down, databases = c("GO_Biological_Process_2021", "KEGG_2021_Human", "MSigDB_Hallmark_2020"))
+
+# Add Gene Count Ratio for more informative plotting
+add_gene_count_ratio <- function(df) {
+  df %>%
+    mutate(Overlap = as.character(Overlap),
+           GeneCountRatio = sapply(Overlap, function(x) {
+             nums <- as.numeric(strsplit(x, "/")[[1]])
+             if (length(nums) == 2) return(nums[1] / nums[2])
+             else return(NA)
+           })) %>%
+    mutate(negLogP = -log10(Adjusted.P.value))
+}
+
+# Function to create and save plots for each database
+create_enrichment_plot <- function(df, db_name, direction) {
+  df <- df %>%
+    dplyr::slice_max(order_by = negLogP, n = 10) %>%
+    mutate(
+      Term = stringr::str_trunc(Term, 60),  # truncate long names
+      Term = factor(Term, levels = rev(unique(Term)))  # reorder terms
+    )
+  
+  ggplot(df, aes(x = Term, y = negLogP, color = Adjusted.P.value, size = GeneCountRatio)) +
+    geom_point() +
+    scale_color_gradient(low = "blue", high = "red") +
+    coord_flip() +
+    labs(
+      title = paste("Top 10", db_name, "Terms for clusters HSC vs Prog in AML", direction, "Genes"),
+      x = NULL,
+      y = "-log10(Adjusted P-value)",
+      color = "Adj. P-value",
+      size = "Gene Ratio"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(size = 10, face = "bold"),
+      axis.text.y = element_text(size = 12),
+      axis.text.x = element_text(size = 12),
+      legend.title = element_text(size = 13),
+      legend.text = element_text(size = 11)
+    )
+}
+
+# Prepare Enrichr results
+enrichr_up_go <- add_gene_count_ratio(as.data.frame(enrichr_up$GO_Biological_Process_2021))
+enrichr_up_kegg <- add_gene_count_ratio(as.data.frame(enrichr_up$KEGG_2021_Human))
+enrichr_up_msigdb <- add_gene_count_ratio(as.data.frame(enrichr_up$MSigDB_Hallmark_2020))
+
+enrichr_down_go <- add_gene_count_ratio(as.data.frame(enrichr_down$GO_Biological_Process_2021))
+enrichr_down_kegg <- add_gene_count_ratio(as.data.frame(enrichr_down$KEGG_2021_Human))
+enrichr_down_msigdb <- add_gene_count_ratio(as.data.frame(enrichr_down$MSigDB_Hallmark_2020))
+
+# Create and save plots for upregulated genes
+# GO Biological Process (Upregulated)
+up_go_plot <- create_enrichment_plot(enrichr_up_go, "GO Biological Process", "Upregulated")
+ggsave("top_10_upregulated_GO_terms_HSC_vs_Prog.pdf", up_go_plot, width = 12, height = 8)
+ggsave("top_10_upregulated_GO_terms_HSC_vs_Prog.jpeg", up_go_plot, width = 12, height = 8)
+
+# KEGG (Upregulated)
+up_kegg_plot <- create_enrichment_plot(enrichr_up_kegg, "KEGG", "Upregulated")
+ggsave("top_10_upregulated_KEGG_terms_HSC_vs_Prog.pdf", up_kegg_plot, width = 12, height = 8)
+ggsave("top_10_upregulated_KEGG_terms_HSC_vs_Prog.jpeg", up_kegg_plot, width = 12, height = 8)
+
+# MSigDB (Upregulated)
+up_msigdb_plot <- create_enrichment_plot(enrichr_up_msigdb, "MSigDB", "Upregulated")
+ggsave("top_10_upregulated_MSigDB_terms_HSC_vs_Prog.pdf", up_msigdb_plot, width = 12, height = 8)
+ggsave("top_10_upregulated_MSigDB_terms_HSC_vs_Prog.jpeg", up_msigdb_plot, width = 12, height = 8)
+
+# Create and save plots for downregulated genes
+# GO Biological Process (Downregulated)
+down_go_plot <- create_enrichment_plot(enrichr_down_go, "GO Biological Process", "Downregulated")
+ggsave("top_10_downregulated_GO_terms_HSC_vs_Prog.pdf", down_go_plot, width = 12, height = 8)
+ggsave("top_10_downregulated_GO_terms_HSC_vs_Prog.jpeg", down_go_plot, width = 12, height = 8)
+
+# KEGG (Downregulated)
+down_kegg_plot <- create_enrichment_plot(enrichr_down_kegg, "KEGG", "Downregulated")
+ggsave("top_10_downregulated_KEGG_terms_HSC_vs_Prog.pdf", down_kegg_plot, width = 12, height = 8)
+ggsave("top_10_downregulated_KEGG_terms_HSC_vs_Prog.jpeg", down_kegg_plot, width = 12, height = 8)
+
+# MSigDB (Downregulated)
+down_msigdb_plot <- create_enrichment_plot(enrichr_down_msigdb, "MSigDB", "Downregulated")
+ggsave("top_10_downregulated_MSigDB_terms_HSC_vs_Prog.pdf", down_msigdb_plot, width = 12, height = 8)
+ggsave("top_10_downregulated_MSigDB_terms_HSC_vs_Prog.jpeg", down_msigdb_plot, width = 12, height = 8)
+
+# Save enriched results as CSV for further analysis
+write.csv(enrichr_up_go, "enrichr_upregulated_GO_results_HSC_vs_Prog.csv", row.names = FALSE)
+write.csv(enrichr_up_kegg, "enrichr_upregulated_KEGG_results_HSC_vs_Prog.csv", row.names = FALSE)
+write.csv(enrichr_up_msigdb, "enrichr_upregulated_MSigDB_results_HSC_vs_Prog.csv", row.names = FALSE)
+
+write.csv(enrichr_down_go, "enrichr_downregulated_GO_results_HSC_vs_Prog.csv", row.names = FALSE)
+write.csv(enrichr_down_kegg, "enrichr_downregulated_KEGG_results_HSC_vs_Prog.csv", row.names = FALSE)
+write.csv(enrichr_down_msigdb, "enrichr_downregulated_MSigDB_results_HSC_vs_Prog.csv", row.names = FALSE)
+
+```
+
+
+## Common disregulated genes Prog vs Prog Post-chemo vs Pre-chemo, EnrichR 
+```{r}
+# Define the function to filter up/down regulated genes
+get_filtered_genes <- function(de_table, direction = "up", logfc_thresh = 1) {
+  if (direction == "up") {
+    selected_genes <- rownames(de_table[de_table$avg_log2FC >= logfc_thresh, ])
+  } else if (direction == "down") {
+    selected_genes <- rownames(de_table[de_table$avg_log2FC <= -logfc_thresh, ])
+  }
+  return(selected_genes)
+}
+
+# Get upregulated and downregulated genes for Prog in both comparisons (AML vs Ctrl and Postchemo vs Prechemo)
+up_genes_prog_aml <- get_filtered_genes(markers_leu_vs_ctrl_Prog, direction = "up")
+down_genes_prog_aml <- get_filtered_genes(markers_leu_vs_ctrl_Prog, direction = "down")
+
+up_genes_prog_chemo <- get_filtered_genes(markers_Prog_postchemo_vs_prechemo, direction = "up")
+down_genes_prog_chemo <- get_filtered_genes(markers_Prog_postchemo_vs_prechemo, direction = "down")
+
+# Find common upregulated and downregulated genes between AML vs Ctrl and Postchemo vs Prechemo in Prog
+common_up <- intersect(up_genes_prog_aml, up_genes_prog_chemo)
+common_down <- intersect(down_genes_prog_aml, down_genes_prog_chemo)
+
+# Output the common upregulated and downregulated genes
+cat("Common upregulated genes between AML vs Ctrl and Postchemo vs Prechemo in Prog:\n", common_up, "\n")
+cat("Common downregulated genes between AML vs Ctrl and Postchemo vs Prechemo in Prog:\n", common_down, "\n")
+
+# Perform Enrichr analysis for upregulated genes with additional MSigDB database
+enrichr_up <- enrichr(common_up, databases = c("GO_Biological_Process_2021", "KEGG_2021_Human", "MSigDB_Hallmark_2020"))
+
+# Perform Enrichr analysis for downregulated genes with additional MSigDB database
+enrichr_down <- enrichr(common_down, databases = c("GO_Biological_Process_2021", "KEGG_2021_Human", "MSigDB_Hallmark_2020"))
+
+# Add Gene Count Ratio for more informative plotting
+add_gene_count_ratio <- function(df) {
+  df %>%
+    mutate(Overlap = as.character(Overlap),
+           GeneCountRatio = sapply(Overlap, function(x) {
+             nums <- as.numeric(strsplit(x, "/")[[1]])
+             if (length(nums) == 2) return(nums[1] / nums[2])
+             else return(NA)
+           })) %>%
+    mutate(negLogP = -log10(Adjusted.P.value))
+}
+
+# Function to create and save plots for each database
+create_enrichment_plot <- function(df, db_name, direction) {
+  df <- df %>%
+    dplyr::slice_max(order_by = negLogP, n = 10) %>%
+    mutate(
+      Term = stringr::str_trunc(Term, 60),  # truncate long names
+      Term = factor(Term, levels = rev(unique(Term)))  # reorder terms
+    )
+  
+  ggplot(df, aes(x = Term, y = negLogP, color = Adjusted.P.value, size = GeneCountRatio)) +
+    geom_point() +
+    scale_color_gradient(low = "blue", high = "red") +
+    coord_flip() +
+    labs(
+      title = paste("Top 10", db_name, "Terms for cluster Prog and Prog post vs prechemo", 
+                    direction, "Genes"),
+      x = NULL,
+      y = "-log10(Adjusted P-value)",
+      color = "Adj. P-value",
+      size = "Gene Ratio"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(size = 10, face = "bold"),
+      axis.text.y = element_text(size = 12),
+      axis.text.x = element_text(size = 12),
+      legend.title = element_text(size = 13),
+      legend.text = element_text(size = 11)
+    )
+}
+
+# Prepare Enrichr results
+enrichr_up_go <- add_gene_count_ratio(as.data.frame(enrichr_up$GO_Biological_Process_2021))
+enrichr_up_kegg <- add_gene_count_ratio(as.data.frame(enrichr_up$KEGG_2021_Human))
+enrichr_up_msigdb <- add_gene_count_ratio(as.data.frame(enrichr_up$MSigDB_Hallmark_2020))
+
+enrichr_down_go <- add_gene_count_ratio(as.data.frame(enrichr_down$GO_Biological_Process_2021))
+enrichr_down_kegg <- add_gene_count_ratio(as.data.frame(enrichr_down$KEGG_2021_Human))
+enrichr_down_msigdb <- add_gene_count_ratio(as.data.frame(enrichr_down$MSigDB_Hallmark_2020))
+
+# Plot for GO Biological Process (Upregulated)
+up_go_plot <- create_enrichment_plot(enrichr_up_go, "GO Biological Process", "Upregulated")
+ggsave("top_10_upregulated_GOBP_terms_with_padj_Prog_Prog_post_pre.jpeg", up_go_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_upregulated_GOBP_terms_with_padj_Prog_Prog_post_pre.pdf", up_go_plot, width = 12, height = 8, device = "pdf")
+print(up_go_plot)
+
+# Plot for KEGG (Upregulated)
+up_kegg_plot <- create_enrichment_plot(enrichr_up_kegg, "KEGG", "Upregulated")
+ggsave("top_10_upregulated_KEGG_terms_with_padj_Prog_Prog_post_pre.jpeg", up_kegg_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_upregulated_KEGG_terms_with_padj_Prog_Prog_post_pre.pdf", up_kegg_plot, width = 12, height = 8, device = "pdf")
+print(up_kegg_plot)
+
+# Plot for MSigDB (Upregulated)
+up_msigdb_plot <- create_enrichment_plot(enrichr_up_msigdb, "MSigDB", "Upregulated")
+ggsave("top_10_upregulated_MSigDB_terms_with_padj_Prog_Prog_post_pre.jpeg", up_msigdb_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_upregulated_MSigDB_terms_with_padj_Prog_Prog_post_pre.pdf", up_msigdb_plot, width = 12, height = 8, device = "pdf")
+print(up_msigdb_plot)
+
+# Plot for GO Biological Process (Downregulated)
+down_go_plot <- create_enrichment_plot(enrichr_down_go,"GO Biological Process", "Downregulated")
+ggsave("top_10_downregulated_GOBP_terms_with_padj_Prog_Prog_post_pre.jpeg", down_go_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_downregulated_GOBP_terms_with_padj_Prog_Prog_post_pre.pdf", down_go_plot, width = 12, height = 8, device = "pdf")
+print(down_go_plot)
+
+# Plot for KEGG (Downregulated)
+down_kegg_plot <- create_enrichment_plot(enrichr_down_kegg, "KEGG", "Downregulated")
+ggsave("top_10_downregulated_KEGG_terms_with_padj_Prog_Prog_post_pre.jpeg", down_kegg_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_downregulated_KEGG_terms_with_padj_Prog_Prog_post_pre.pdf", down_kegg_plot, width = 12, height = 8, device = "pdf")
+print(down_kegg_plot)
+
+# Plot for MSigDB (Downregulated)
+down_msigdb_plot <- create_enrichment_plot(enrichr_down_msigdb, "MSigDB", "Downregulated")
+ggsave("top_10_downregulated_MSigDB_terms_with_padj_Prog_Prog_post_pre.jpeg", down_msigdb_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_downregulated_MSigDB_terms_with_padj_Prog_Prog_post_pre.pdf", down_msigdb_plot, width = 12, height = 8, device = "pdf")
+print(down_msigdb_plot)
+
+# Save enriched results as CSV for further analysis
+write.csv(enrichr_up_df, "enrichr_upregulated_results_Prog_Prog_post_pre.csv", row.names = FALSE)
+write.csv(enrichr_down_df, "enrichr_downregulated_results_Prog_Prog_post_pre.csv", row.names = FALSE)
+
+
+```
+##Common genes HSC and HSC post vs prechemo, EnrichR
+```{r}
+# Define the function to filter up/down regulated genes
+get_filtered_genes <- function(de_table, direction = "up", logfc_thresh = 1) {
+  if (direction == "up") {
+    selected_genes <- rownames(de_table[de_table$avg_log2FC >= logfc_thresh, ])
+  } else if (direction == "down") {
+    selected_genes <- rownames(de_table[de_table$avg_log2FC <= -logfc_thresh, ])
+  }
+  return(selected_genes)
+}
+
+# Get upregulated and downregulated genes for both comparison HSC:
+up_genes_hsc_chemo <- get_filtered_genes(markers_HSC_postchemo_vs_prechemo, direction = "up")
+down_genes_hsc_chemo <- get_filtered_genes(markers_HSC_postchemo_vs_prechemo, direction = "down")
+
+up_genes_hsc_aml <- get_filtered_genes(markers_leu_vs_ctrl_HSC, direction = "up")
+down_genes_hsc_aml <- get_filtered_genes(markers_leu_vs_ctrl_HSC, direction = "down")
+
+# Common genes
+common_up_hsc <- intersect(up_genes_hsc_chemo, up_genes_hsc_aml)
+common_down_hsc <- intersect(down_genes_hsc_chemo, down_genes_hsc_aml)
+
+# Lists of common genes
+cat("Common upregulated genes HSC (postchemo vs prechemo) and (AML vs Ctrl):\n", common_up_hsc, "\n")
+cat("Common downregulated гgenes HSC (postchemo vs prechemo) and (AML vs Ctrl):\n", common_down_hsc, "\n")
+
+
+```
+## Common genes Prog vs HSC postchemo vs prechemo, EnrichR
+```{r}
+
+# Define the function to filter up/down regulated genes
+get_filtered_genes <- function(de_table, direction = "up", logfc_thresh = 1) {
+  if (direction == "up") {
+    selected_genes <- rownames(de_table[de_table$avg_log2FC >= logfc_thresh, ])
+  } else if (direction == "down") {
+    selected_genes <- rownames(de_table[de_table$avg_log2FC <= -logfc_thresh, ])
+  }
+  return(selected_genes)
+}
+
+# Get upregulated and downregulated genes 
+up_genes_prog_chemo <- get_filtered_genes(markers_Prog_postchemo_vs_prechemo, direction = "up")
+down_genes_prog_chemo <- get_filtered_genes(markers_Prog_postchemo_vs_prechemo, direction = "down")
+
+up_genes_hsc_chemo <- get_filtered_genes(markers_HSC_postchemo_vs_prechemo, direction = "up")
+down_genes_hsc_chemo <- get_filtered_genes(markers_HSC_postchemo_vs_prechemo, direction = "down")
+
+# Common genes
+common_up <- intersect(up_genes_prog_chemo, up_genes_hsc_chemo)
+common_down <- intersect(down_genes_prog_chemo, down_genes_hsc_chemo)
+
+# Lists of common genes
+cat("\nCommon upregulated genes Prog і HSC (postchemo vs prechemo):\n", common_up, "\n")
+cat("\nCommon downregulated genes Prog і HSC (postchemo vs prechemo):\n", common_down, "\n")
+
+
+
+# Enrichr analysis for common genes
+enrichr_up <- enrichr(common_up, databases = c("GO_Biological_Process_2021", "KEGG_2021_Human", "MSigDB_Hallmark_2020"))
+#enrichr_down <- enrichr(common_down, databases = c("GO_Biological_Process_2021", "KEGG_2021_Human", "MSigDB_Hallmark_2020"))
+
+# Add Gene Count Ratio for more informative plotting
+add_gene_count_ratio <- function(df) {
+  df %>%
+    mutate(Overlap = as.character(Overlap),
+           GeneCountRatio = sapply(Overlap, function(x) {
+             nums <- as.numeric(strsplit(x, "/")[[1]])
+             if (length(nums) == 2) return(nums[1] / nums[2])
+             else return(NA)
+           })) %>%
+    mutate(negLogP = -log10(Adjusted.P.value))
+}
+
+# Function to create and save plots for each database
+create_enrichment_plot <- function(df, db_name, direction) {
+  df <- df %>%
+    dplyr::slice_max(order_by = negLogP, n = 10) %>%
+    mutate(
+      Term = stringr::str_trunc(Term, 60),  # truncate long names
+      Term = factor(Term, levels = rev(unique(Term)))  # reorder terms
+    )
+  
+  ggplot(df, aes(x = Term, y = negLogP, color = Adjusted.P.value, size = GeneCountRatio)) +
+    geom_point() +
+    scale_color_gradient(low = "blue", high = "red") +
+    coord_flip() +
+    labs(
+      title = paste("Top 10", db_name, "Terms for clusters Prog and HSC post vs prechemo", 
+                    direction, "Genes"),
+      x = NULL,
+      y = "-log10(Adjusted P-value)",
+      color = "Adj. P-value",
+      size = "Gene Ratio"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(size = 11, face = "bold"),
+      axis.text.y = element_text(size = 14),
+      axis.text.x = element_text(size = 14),
+      legend.title = element_text(size = 13),
+      legend.text = element_text(size = 11)
+    )
+}
+
+# Prepare Enrichr results
+enrichr_up_go <- add_gene_count_ratio(as.data.frame(enrichr_up$GO_Biological_Process_2021))
+enrichr_up_kegg <- add_gene_count_ratio(as.data.frame(enrichr_up$KEGG_2021_Human))
+enrichr_up_msigdb <- add_gene_count_ratio(as.data.frame(enrichr_up$MSigDB_Hallmark_2020))
+
+enrichr_down_go <- add_gene_count_ratio(as.data.frame(enrichr_down$GO_Biological_Process_2021))
+enrichr_down_kegg <- add_gene_count_ratio(as.data.frame(enrichr_down$KEGG_2021_Human))
+enrichr_down_msigdb <- add_gene_count_ratio(as.data.frame(enrichr_down$MSigDB_Hallmark_2020))
+
+# Plot for GO Biological Process (Upregulated)
+up_go_plot <- create_enrichment_plot(enrichr_up_go, "GO Biological Process", "Upregulated")
+ggsave("top_10_upregulated_GOBP_Prog_HSC_post_pre.jpeg", up_go_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_upregulated_GOBP_Prog_HSC_post_pre.pdf", up_go_plot, width = 12, height = 8, device = "pdf")
+print(up_go_plot)
+
+# Plot for KEGG (Upregulated)
+up_kegg_plot <- create_enrichment_plot(enrichr_up_kegg, "KEGG", "Upregulated")
+ggsave("top_10_upregulated_KEGG_Prog_HSC_post_pre.jpeg", up_kegg_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_upregulated_KEGG_Prog_HSC_post_pre.pdf", up_kegg_plot, width = 12, height = 8, device = "pdf")
+print(up_kegg_plot)
+
+# Plot for MSigDB (Upregulated)
+up_msigdb_plot <- create_enrichment_plot(enrichr_up_msigdb, "MSigDB", "Upregulated")
+ggsave("top_10_upregulated_MSigDB_Prog_HSC_post_pre.jpeg", up_msigdb_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_upregulated_MSigDB_Prog_HSC_post_pre.pdf", up_msigdb_plot, width = 12, height = 8, device = "pdf")
+print(up_msigdb_plot)
+
+# Plot for GO Biological Process (Downregulated)
+down_go_plot <- create_enrichment_plot(enrichr_down_go,"GO Biological Process", "Downregulated")
+ggsave("top_10_downregulated_GOBP_Prog_HSC_post_pre.jpeg", down_go_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_downregulated_GOBP_Prog_HSC_post_pre.pdf", down_go_plot, width = 12, height = 8, device = "pdf")
+print(down_go_plot)
+
+# Plot for KEGG (Downregulated)
+down_kegg_plot <- create_enrichment_plot(enrichr_down_kegg, "KEGG", "Downregulated")
+ggsave("top_10_downregulated_KEGG_Prog_HSC_post_pre.jpeg", down_kegg_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_downregulated_KEGG_Prog_HSC_post_pre.pdf", down_kegg_plot, width = 12, height = 8, device = "pdf")
+print(down_kegg_plot)
+
+# Plot for MSigDB (Downregulated)
+down_msigdb_plot <- create_enrichment_plot(enrichr_down_msigdb, "MSigDB", "Downregulated")
+ggsave("top_10_downregulated_MSigDB_Prog_HSC_post_pre.jpeg", down_msigdb_plot, width = 12, height = 8, device = "jpeg")
+ggsave("top_10_downregulated_MSigDB_Prog_HSC_post_pre.pdf", down_msigdb_plot, width = 12, height = 8, device = "pdf")
+print(down_msigdb_plot)
+
+
+```
 
 ## Overrepresentation_enrichR
 ##Import dbs
