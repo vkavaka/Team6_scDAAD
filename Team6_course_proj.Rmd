@@ -1,0 +1,1562 @@
+---
+title: "Single-Cell Transcriptomic Analysis of Hematopoietic Stem and Progenitor Cells in Acute Myeloid Leukemia and Chemotherapy Response"
+author: "Team 6"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    df_print: paged
+    highlights: pygments
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+---
+
+
+## Install packages
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+install.packages(c("here", "tidyverse", "harmony", "Matrix", "remotes", 
+                   "ggrepel", "enrichR", "clustree", "cluster", 
+                   "igraph", "ggraph", "BiocManager", ""))
+remotes::install_github("satijalab/seurat", "seurat5", quiet = TRUE)
+BiocManager::install("SingleR")
+BiocManager::install("celldex")
+BiocManager::install(c('BiocGenerics', 'DelayedArray', 'DelayedMatrixStats',
+                       'limma', 'lme4', 'S4Vectors', 'SingleCellExperiment',
+                       'SummarizedExperiment', 'batchelor', 'HDF5Array',
+                       'terra', 'ggrastr'))
+remotes::install_github('cole-trapnell-lab/monocle3', ref="develop")
+BiocManager::install("org.Hs.eg.db")
+install.packages('msigdbr')
+BiocManager::install("clusterProfiler", force = TRUE)
+```
+
+
+## Import packages
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+library(here)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(clustree)
+library(cluster)
+library(Seurat)
+library(readr)
+library(purrr)
+library(harmony)
+library(Matrix)
+library(SingleR)
+library(celldex)
+library(monocle3)
+library(igraph)
+library(ggraph)
+library(slingshot)
+library(ggrepel)
+library(enrichR)
+library(magrittr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(msigdbr)
+```
+
+## Download the data
+Run in bash
+
+mkdir data
+
+cd data
+
+wget https://ftp.ncbi.nlm.nih.gov/geo/series/GSE116nnn/GSE116256/suppl/GSE116256_RAW.tar -O GSE116256_RAW.tar
+
+tar -xvf GSE116256_RAW.tar
+
+rm GSE116256_RAW.tar
+
+
+## Set the path to the data folder
+```{r}
+data_path = here("./data/")
+```
+
+
+## Get count matrices
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Function to read counts
+read_counts <- function(file_path) {
+    counts <- read_tsv(file_path)
+    counts <- as.data.frame(counts)
+    
+    # Moves gene names to row names
+    genes <- counts$Gene
+    counts <- counts[,-1]
+    rownames(counts) <- genes
+    
+    return(as.matrix(counts))
+}
+
+# Read all count matrices
+count_files <- list.files(data_path, pattern = "*.dem.txt.gz", full.names = TRUE)[1:41]
+samples <- map_chr(count_files, basename)
+samples <- str_replace(samples, "(GSM[0-9]+_.+).dem.txt.gz", "\\1")
+names(count_files) <- samples
+counts <- map(count_files, read_counts)
+```
+
+
+## Get metadata
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Function to read metadata
+read_meta <- function(file_path) {
+    meta <- read_tsv(file_path)
+    meta <- as.data.frame(meta)
+    
+    # Moves gene names to row names
+    cells <- meta$Cell
+    meta <- meta[,-1]
+    rownames(meta) <- cells
+    
+    return(meta)
+}
+
+# Read all metadata
+meta_files <- list.files(data_path, pattern = "*.anno.txt.gz", full.names = TRUE)[1:41]
+meta_names <- map_chr(meta_files, basename)
+meta_names <- str_replace(meta_names, "(GSM[0-9]+_.+).anno.txt.gz", "\\1")
+names(meta_files) <- meta_names
+meta <- map(meta_files, read_meta)
+```
+
+
+## Create Seurat object
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+objs <- map2(counts, meta, 
+             ~CreateSeuratObject(counts = as(.x, "sparseMatrix"),
+                                 meta.data = .y))
+merged_seurat <- reduce(objs, function(x, y) {merge(x, y)})
+```
+
+
+## Free up memory
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+rm(counts, meta, objs)
+```
+
+
+## Add custom metadata
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+merged_seurat$Temp <- rownames(merged_seurat@meta.data)
+merged_seurat@meta.data <- tidyr::separate(merged_seurat@meta.data, 
+                                    col = Temp, 
+                                    into = c("Temp2", "Barcode"), 
+                                    sep = "_")
+merged_seurat@meta.data <- tidyr::separate(merged_seurat@meta.data, 
+                                           col = Temp2, 
+                                           into = c("Patient_id", "Days_from_diagnosis"), 
+                                           sep = "-")
+merged_seurat@meta.data$Days_from_diagnosis[merged_seurat@meta.data$Days_from_diagnosis %in% c("34p", "34p38n")] <- NA
+merged_seurat@meta.data$Days_from_diagnosis <- gsub("^D", "", merged_seurat@meta.data$Days_from_diagnosis)
+merged_seurat@meta.data$Days_from_diagnosis <- as.integer(merged_seurat@meta.data$Days_from_diagnosis)
+
+# List of sample groups
+sample_groups <- list(
+    control = c("BM1", "BM2", "BM3", "BM4", "BM5-34p", "BM5-34p38n"),
+    pre_chemo = c("AML1012-D0", "AML210A-D0", "AML419A-D0", "AML916-D0", "AML921A-D0",
+                  "AML314-D0", "AML371-D0", "AML475-D0", "AML722B-D0", "AML870-D0", "AML997-D0",
+                  "AML329-D0", "AML420B-D0", "AML556-D0", "AML328-D0", "AML707B-D0"),
+    post_chemo = c("AML314-D31", "AML371-D34", "AML475-D29", "AML722B-D49", "AML870-D14",
+                   "AML997-D35", "AML329-D20", "AML329-D37", "AML420B-D14", "AML420B-D35",
+                   "AML556-D15", "AML556-D31", "AML328-D29", "AML328-D113", "AML328-D171",
+                   "AML707B-D18", "AML707B-D41", "AML707B-D97", "AML707B-D113")
+)
+
+# Function to get group
+get_group <- function(sample) {
+    for (group in names(sample_groups)) {
+        if (sample %in% sample_groups[[group]]) return(group)
+    }
+}
+
+# Add condition column
+merged_seurat$Condition <- map_chr(merged_seurat$orig.ident, get_group)
+
+# List of additional information about patients
+sample_info <- list(
+  BM1 = c(Gender = "M", Age = 52),
+  BM2 = c(Gender = "M", Age = 21),
+  BM3 = c(Gender = "M", Age = 56),
+  BM4 = c(Gender = "M", Age = 23),
+  BM5 = c(Gender = "M", Age = 45),
+  AML1012 = c(Gender = "F", Age = 32),
+  AML210A = c(Gender = "M", Age = 67),
+  AML419A = c(Gender = "F", Age = 54),
+  AML916 = c(Gender = "F", Age = 57),
+  AML921A = c(Gender = "M", Age = 42),
+  AML314 = c(Gender = "M", Age = 54), 
+  AML371 = c(Gender = "M", Age = 51), 
+  AML475 = c(Gender = "M", Age = 70), 
+  AML722B = c(Gender = "F", Age = 52),
+  AML870 = c(Gender = "M", Age = 32), 
+  AML997 = c(Gender = "M", Age = 62), 
+  AML329 = c(Gender = "F", Age = 73), 
+  AML420B = c(Gender = "M", Age = 58),
+  AML556 = c(Gender = "M", Age = 70), 
+  AML328 = c(Gender = "F", Age = 74), 
+  AML707B = c(Gender = "M", Age = 26)
+)
+
+# Init columns Gender and Age
+merged_seurat@meta.data$Gender <- NA
+merged_seurat@meta.data$Age <- NA
+
+# For loop to fill columns Gender and Age
+for (sample_name in unique(merged_seurat@meta.data$Patient_id)) {
+    gender <- sample_info[[sample_name]]["Gender"]
+    age <- sample_info[[sample_name]]["Age"]
+
+    # Fill columns Gender and Age
+    merged_seurat@meta.data[merged_seurat@meta.data$Patient_id == sample_name, "Gender"] <- gender
+    merged_seurat@meta.data[merged_seurat@meta.data$Patient_id == sample_name, "Age"] <- age
+}
+```
+
+So, we have a Seurat object with 41 samples. In metadata, we have a columns `Condition`, `Patient_id`, `Days_from_diagnosis` and `CellType`. 
+
+`Condition` is a factor with three levels: `control`, `pre_chemo` and `post_chemo`. In `control` group we have 6 samples that starts with `BM`. In `pre_chemo` group we have 16 samples that ends with `-D0`. In `post_chemo` group we have 19 samples that ends with `-DXX` where `XX` is the number of days after chemotherapy.
+
+`Patient_id` is a factor that represents the patient id (like `AML1012` or `BM1`). 
+
+`Days_from_diagnosis` is a factor that represents the days from diagnosis (like `0` or `113`) or `NA` for control.
+
+`CellType` is a factor with 22 levels: `GMP`, `GMP-like`, `Prog-like`, `ProMono-like`, `HSC-like`, `cDC-like`, `Mono-like`, `Mono`, `Prog`, `cDC`, `HSC`, `ProMono`, `earlyEry`, `CTL`, `T`, `Plasma`, `ProB`, `NK`, `B`, `lateEry`, `pDC` or `NA`. These types predicted by the authors of the study.
+
+Also we have two additional columns `Gender` and `Age` that we filled with information about patients.
+
+
+## Check cell counts by groups
+```{r}
+table(merged_seurat$Condition)
+```
+
+
+## Filter cells by mitochondrial genes
+```{r warning=FALSE}
+merged_seurat$percent.mt <- PercentageFeatureSet(merged_seurat, pattern="^MT-")
+VlnPlot(merged_seurat, features = c("nCount_RNA","nFeature_RNA","percent.mt"), group.by = "Condition")
+m_seurat <- subset(merged_seurat, subset = nCount_RNA < 50000 & nFeature_RNA > 200 & nFeature_RNA < 6000 & percent.mt < 10)
+VlnPlot(m_seurat, features = c("nCount_RNA","nFeature_RNA","percent.mt"), group.by = "Condition")
+```
+
+
+## Visualize feature-feature relationships
+```{r results="hide", fig.width = 12, fig.height = 12}
+plot1 <- FeatureScatter(m_seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(m_seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+gridExtra::grid.arrange(plot1, plot2, nrow = 2)
+```
+
+
+## Free up memory
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+rm(merged_seurat)
+```
+
+
+## Normalize data
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+m_seurat <- m_seurat %>% 
+    NormalizeData(normalization.method = "LogNormalize", scale.factor = 10000) %>%
+    FindVariableFeatures(selection.method = "vst", nfeatures = 2000) %>%
+    ScaleData()
+```
+
+
+## Run PCA
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+m_seurat <- RunPCA(m_seurat, npcs = 50)
+```
+
+
+## Create Elbow plot to determine number of PCs
+```{r}
+ElbowPlot(m_seurat)
+```
+
+Let's say that the elbow plot shows that the optimal number of PCs is 20.
+
+
+## Run UMAP before Harmony
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+m_seurat <- RunUMAP(m_seurat, dims = 1:20)
+```
+
+
+## Plot UMAP for different groupings
+```{r results="hide", fig.width = 12, fig.height = 28}
+p1 <- DimPlot(m_seurat, reduction = "umap", group.by = "Condition")
+p2 <- DimPlot(m_seurat, reduction = "umap", group.by = "orig.ident")
+p3 <- DimPlot(m_seurat, reduction = "umap", group.by = "CellType")
+gridExtra::grid.arrange(p1, p2, p3, nrow = 3)
+```
+
+Looks good, but we need to correct for batch effects with Harmony and group by sample id in column `orig.ident`.
+
+unique(m_seurat@meta.data$orig.ident)
+
+"AML1012-D0"   "AML210A-D0"   "AML314-D0"    "AML314-D31"   "AML328-D0"    "AML328-D113"  "AML328-D171"  "AML328-D29"   "AML329-D0"    "AML329-D20"  
+"AML329-D37"   "AML371-D0"    "AML371-D34"   "AML419A-D0"   "AML420B-D0"   "AML420B-D14"  "AML420B-D35"  "AML475-D0"    "AML475-D29"   "AML556-D0"   
+"AML556-D15"   "AML556-D31"   "AML707B-D0"   "AML707B-D113" "AML707B-D18"  "AML707B-D41"  "AML707B-D97"  "AML722B-D0"   "AML722B-D49"  "AML870-D0"   
+"AML870-D14"   "AML916-D0"    "AML921A-D0"   "AML997-D0"    "AML997-D35"   "BM1"          "BM2"          "BM3"          "BM4"          "BM5-34p"     
+"BM5-34p38n"
+
+
+## Run Harmony
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+harmonized_seurat <- RunHarmony(m_seurat,
+                                group.by.vars = c("orig.ident"),
+                                reduction = "pca", 
+                                reduction.save = "harmony")
+```
+
+
+## Free up memory
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+rm(m_seurat)
+```
+
+
+## Run UMAP and clusterization after Harmony  
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+harmonized_seurat <- harmonized_seurat %>% 
+    RunUMAP(reduction = "harmony", dims = 1:20) %>%
+    FindNeighbors(reduction = "harmony", dims = 1:20) %>%
+    FindClusters(resolution = 0.6)
+```
+
+
+## Plot UMAP for different groupings after Harmony
+```{r results="hide", fig.width = 12, fig.height = 28}
+p4 <- DimPlot(harmonized_seurat, reduction = "umap", group.by = "Condition")
+p5 <- DimPlot(harmonized_seurat, reduction = "umap", group.by = "orig.ident")
+p6 <- DimPlot(harmonized_seurat, reduction = "umap", group.by = "CellType")
+gridExtra::grid.arrange(p4, p5, p6, nrow = 3)
+```
+
+
+## Before and after pairwise comparison
+```{r results="hide", fig.width = 12, fig.height = 50}
+gridExtra::grid.arrange(p1, p4, p2, p5, p3, p6, nrow = 6)
+```
+
+
+## Plot UMAP with our clusters and original clusters
+```{r results="hide", fig.width = 12, fig.height = 18}
+p7 <- DimPlot(harmonized_seurat, reduction = "umap")
+gridExtra::grid.arrange(p6, p7, nrow = 2)
+```
+
+
+## Save Seurat object
+```{r results="hide"}
+saveRDS(harmonized_seurat, "prepared_seurat_obj_standard.RDS")
+rm(harmonized_seurat)
+```
+
+
+## Load Seurat object
+```{r}
+prepared_seurat_obj_standard <- readRDS("prepared_seurat_obj_standard.RDS")
+```
+
+
+```{r}
+# Дивимося на дерево кластерів, щоб зрозуміти, яке значення resolution краще обрати :
+prepared_seurat_obj_standard <- FindClusters(prepared_seurat_obj_standard, resolution = seq(from = 0.2, to = 3, by = 0.2))
+clustree(prepared_seurat_obj_standard, prefix = "RNA_snn_res.")
+```
+
+
+```{r}
+# Знаходими кластери
+prepared_seurat_obj_standard <- FindClusters(prepared_seurat_obj_standard, resolution = 0.71)
+
+# Малюємо umap 
+DimPlot(prepared_seurat_obj_standard, reduction = "umap", label = TRUE, label.box = TRUE, repel = TRUE)
+
+```
+
+
+```{r}
+# Знаходимо маркерні гени, видаляємо не потрібні маркери.
+featuresobj <- rownames(prepared_seurat_obj_standard)
+markers.remove <- grep(pattern = "^TRAV|^TRBV|^TRGV|^TRDV|^RPL|^RPS", x = rownames(prepared_seurat_obj_standard), value = TRUE) #remove TCR variable genes and ribosomal genes from the analysis
+featuresobj <- featuresobj[!(featuresobj%in%markers.remove)]
+prepared_seurat_obj_standard <- JoinLayers(prepared_seurat_obj_standard)
+prepared_seurat_obj_standard.markers <- FindAllMarkers(object = prepared_seurat_obj_standard, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, features = featuresobj)
+```
+
+
+```{r}
+#visualise top 10, top50, top5  markers by avg Fold Change (log2)
+top50 <- prepared_seurat_obj_standard.markers %>% group_by(cluster) %>% top_n(n = 50, wt = avg_log2FC)
+top50
+top10 <- prepared_seurat_obj_standard.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+top5 <- prepared_seurat_obj_standard.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+View(top5)
+write.csv(top50, "Top50_markers.csv", row.names = FALSE, quote = TRUE)
+write.csv(top10, "Top10_markers.csv", row.names = FALSE, quote = TRUE)
+write.csv(top5, "Top5_markers.csv", row.names = FALSE, quote = TRUE)
+#look into the average heatmap
+cluster.averages_prepared_seurat_obj_standard.markers <- AverageExpression(prepared_seurat_obj_standard, assay = "RNA", return.seurat = TRUE) # , verbose = FALSE)
+```
+
+
+```{r}
+# Будуємо heatmap для того, щоб бачити дифф. експресію між кластерами. 
+options(repr.plot.width=8, repr.plot.height=4)
+
+DoHeatmap(prepared_seurat_obj_standard, features = top5$gene) +
+  theme(axis.text.y = element_text(size = 7))
+```
+
+
+```{r}
+# Анотація клітин, за допомогою пакету SingleR, який буде шукати співпадіння з базою данних HumanPrimaryCellAtlasData, та на виході дасть анотацію на кожну клітину 
+# завантажуємо reference dataset
+ref <- HumanPrimaryCellAtlasData()
+
+
+prepared_seurat_obj_standard_anotate <- GetAssayData(prepared_seurat_obj_standard, slot = "data")
+labels <- SingleR(test = prepared_seurat_obj_standard_anotate, ref = ref, labels = ref$label.main)
+unique(labels$labels)
+
+# Анатуємо кожну клітину окремо. 
+prepared_seurat_obj_standard$SingleR_label <- labels$labels
+
+
+# Робимо графік, залежності, скільки ЯКИХ клітин в кожному кластері. 
+df <- data.frame(
+  Cluster = prepared_seurat_obj_standard$seurat_clusters,
+  CellType = prepared_seurat_obj_standard$SingleR_label
+)
+
+#Робимо підрахунок 
+df_summary <- df %>%
+  group_by(Cluster, CellType) %>%
+  summarise(Count = n()) %>%
+  ungroup()
+
+# Виводимо графік 
+ggplot(df_summary, aes(x = factor(Cluster), y = Count, fill = CellType)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(x = "Кластер", y = "Количество клеток", fill = "Тип клеток") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+##! ПО КЛАСТЕРАМ!! РОБИМО туж саму анотацію клітин, тільки на цей раз, клітини груперуємо по кластерам, і до цих кластерів застосовуємо алгоритми
+# пошуку типу клітини. Тоб-то один кластер - як чисто один тип клітин. 
+
+cluster_exp <- AverageExpression(prepared_seurat_obj_standard, return.seurat = FALSE)$RNA
+
+cluster_labels <- SingleR(test = cluster_exp, ref = ref, labels = ref$label.main)
+prepared_seurat_obj_standard$cell_type <- cluster_labels$labels
+print(cluster_labels)
+View(cluster_labels)
+```
+
+
+```{r}
+# Будуєм гарний графік "з точичками :)", щоб бачити, які ключові генні відміності, між кластерами
+
+Seurat::DotPlot(prepared_seurat_obj_standard, features = unique(top5$gene)) +
+  # this second part of the code is just for esthetics :
+  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 90, 
+                                                     vjust = 1,
+                                                     size = 8, 
+                                                     hjust = 1)) +
+  Seurat::NoLegend()
+
+```
+
+
+## Top5 genes in each cluster
+```{r}
+#Cluster 0
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c("IL7R", "TCF7","LEF1","CCR7","TRAT1"), 
+            reduction = "umap"
+)
+
+FeaturePlot()
+
+#Cluster 1
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c("S100A12", "SERPINA1","MAFB","CD14","C5AR1"), 
+            reduction = "umap"
+)
+
+FeaturePlot()
+
+#Cluster 2+3
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('FAM30A',
+                         'GUCY1A3',
+                         'ANGPT1',
+                         'CD34',
+                         'NPR3',
+                         'SPINK2',
+                         'NRIP1'), 
+            reduction = "umap"
+)
+
+FeaturePlot()
+
+#Cluster 4
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('FAM30A',
+                         'GUCY1A3',
+                         'ANGPT1',
+                         'CD34',
+                         'NPR3',
+                         'SPINK2',
+                         'NRIP1'), 
+            reduction = "umap"
+)
+
+FeaturePlot()
+
+
+#Cluster 5
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('RAD51AP1',
+                         'TK1',
+                         'RRM2',
+                         'TYMS',
+                         'ESCO2'), 
+            reduction = "umap"
+)
+
+#Cluster 6
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('GZMA',
+                         'PRF1',
+                         'KLRD1',
+                         'GZMH',
+                         'GZMB'), 
+            reduction = "umap"
+)
+
+#Cluster 7
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('CA1',
+                         'RHAG',
+                         'GYPA',
+                         'HBM',
+                         'GYPB'), 
+            reduction = "umap"
+)
+
+#Cluster 8
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('NAPSB',
+                         'FCER1A',
+                         'PKIB',
+                         'MRC1',
+                         'S100B'), 
+            reduction = "umap"
+)
+
+#Cluster 9
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('ASPM',
+                         'HMMR',
+                         'UBE2C',
+                         'CEP55',
+                         'PLK1'), 
+            reduction = "umap"
+)
+
+#Cluster 10
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('ELK2AP',
+                         'IGLL5',
+                         'TNFRSF17',
+                         'SDC1',
+                         'CADPS2'), 
+            reduction = "umap"
+)
+
+#Cluster 11
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('GATA2',
+                         'CNRIP1',
+                         'MED12L',
+                         'CPA3',
+                         'ELANE'), 
+            reduction = "umap"
+)
+
+
+#Cluster 12
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('AZU1',
+                         'PRTN3',
+                         'MS4A1'), 
+            reduction = "umap"
+)
+
+#Cluster 13
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('BANK1',
+                        'CD79A',
+                         'LINC00926',
+                         'FCRL1'), 
+            reduction = "umap"
+)
+
+#Cluster 14
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('MCM4',
+                         'PAICS',
+                         'DHFR',
+                         'PCNA'), 
+            reduction = "umap"
+)
+```
+
+
+## Rename clusters and merge similar clusters
+```{r}
+new_cluster_names <- c("Naive-T", "Mono", "Prog", "Prog", "proliferation-T", 
+                                          "NK", "Pro-mono", "Erytrocyte", "DC", "Pro-B", 
+                                          "Plasma", "Mast/Basophile-like", "Neutrophil", 
+                                          "B-cell", "HSC")
+
+names(new_cluster_names) <- levels(prepared_seurat_obj_standard)
+prepared_seurat_obj_standard <- RenameIdents(prepared_seurat_obj_standard, new_cluster_names)
+levels(prepared_seurat_obj_standard)
+
+Idents(prepared_seurat_obj_standard) <- factor(Idents(prepared_seurat_obj_standard), levels = c("NK", "proliferation-T", "Naive-T", "Neutrophil", "Mast/Basophile-like", "Plasma", "B-cell", "Pro-B", "Erytrocyte", "DC", "Mono", "Pro-mono", "Prog", "HSC"))
+prepared_seurat_obj_standard$cell_type <- factor(Idents(prepared_seurat_obj_standard), levels = c("NK", "proliferation-T", "Naive-T", "Neutrophil", "Mast/Basophile-like", "Plasma", "B-cell", "Pro-B", "Erytrocyte", "DC", "Mono", "Pro-mono", "Prog", "HSC"))
+```
+
+
+## Save Seurat object
+```{r}
+saveRDS(prepared_seurat_obj_standard, "seurat_object_after_clustering.RDS")
+```
+
+
+## Read seurat_object_after_clustering
+
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+seurat_obj <- readRDS("seurat_object_after_clustering.RDS")
+seurat_obj
+table(Idents(seurat_obj))
+View(seurat_obj@meta.data)
+```
+
+
+##DGE
+
+## Processing HSC cluster and find markers AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+subset_cluster_HSC <- subset(seurat_obj, idents = "HSC")
+table(subset_cluster_HSC@meta.data$group)
+Idents(subset_cluster_HSC) <- "group"
+
+
+#Find markers HSC
+
+markers_leu_vs_ctrl_HSC <- FindMarkers(subset_cluster_HSC,
+                                       ident.1 = "Leukemia",
+                                       ident.2 = "Healthy",min.pct=0.15)
+
+#Filter significant genes cluster HSC
+
+markers_leu_vs_ctrl_HSC <- markers_leu_vs_ctrl_HSC %>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::arrange(desc(avg_log2FC))
+
+```
+
+
+## Processing Prog cluster and find markers AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+subset_cluster_Prog <- subset(seurat_obj, idents = "Prog")
+table(subset_cluster_Prog@meta.data$group)
+Idents(subset_cluster_Prog) <- "group"
+
+#Find markers Prog
+markers_leu_vs_ctrl_Prog <- FindMarkers(subset_cluster_Prog,
+                                        ident.1 = "Leukemia",
+                                        ident.2 = "Healthy",min.pct=0.15)
+#Filter significant genes cluster Prog
+ markers_leu_vs_ctrl_Prog <- markers_leu_vs_ctrl_Prog %>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::arrange(desc(avg_log2FC))
+
+```
+
+
+## Processing HSC cluster and find markers postchemo vs prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+HSC_condition_obj <- subset_cluster_HSC
+table(Idents(HSC_condition_obj))
+Idents(HSC_condition_obj) <- "Condition"
+
+#Find markers HSC postchemo vs prechemo
+markers_HSC_postchemo_vs_prechemo <- FindMarkers(HSC_condition_obj, ident.1 = "post_chemo", ident.2 = "pre_chemo", min.pct=0.15)
+length(which(markers_HSC_postchemo_vs_prechemo$p_val_adj<0.05))
+
+#Filter significant genes cluster HSC postchemo vs prechemo
+markers_HSC_postchemo_vs_prechemo<- markers_HSC_postchemo_vs_prechemo%>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::arrange(desc(avg_log2FC))
+```
+
+
+## Processing Prog cluster and find markers postchemo vs prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+Prog_condition_obj <- subset_cluster_Prog
+table(Idents(Prog_condition_obj))
+Idents(Prog_condition_obj) <- "Condition"
+
+#Find markers Pog postchemo vs prechemo
+markers_Prog_postchemo_vs_prechemo <- FindMarkers(Prog_condition_obj, ident.1 = "post_chemo", ident.2 = "pre_chemo",min.pct=0.15)
+length(which(markers_Prog_postchemo_vs_prechemo$p_val_adj<0.05))
+
+#Filter significant genes cluster Prog postchemo vs prechemo
+markers_Prog_postchemo_vs_prechemo<- markers_Prog_postchemo_vs_prechemo%>%
+  dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::arrange(desc(avg_log2FC))
+
+```
+
+
+##Save DE results
+```{r echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+write.csv(markers_leu_vs_ctrl_HSC, "markers_leu_vs_ctrl_HSC.csv")
+write.csv(markers_leu_vs_ctrl_Prog, "markers_leu_vs_ctrl_Prog.csv")
+write.csv(markers_HSC_postchemo_vs_prechemo, "markers_HSC_postchemo_vs_prechemo.csv")
+write.csv(markers_Prog_postchemo_vs_prechemo, "markers_Prog_postchemo_vs_prechemo.csv")
+
+```
+
+
+## Volcano plots
+
+## Plot "Prog cluster, AML vs Control"
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+top_leu_vs_ctrl_Prog <- markers_leu_vs_ctrl_Prog 
+
+genes_Prog_leu_vs_ctrl_indexes <- c(1:10, (nrow(top_leu_vs_ctrl_Prog)-10):nrow(top_leu_vs_ctrl_Prog))
+genes_Prog_leu_vs_ctrl<- rownames(top_leu_vs_ctrl_Prog[genes_Prog_leu_vs_ctrl_indexes, ])
+
+top_leu_vs_ctrl_Prog <- top_leu_vs_ctrl_Prog |>
+  mutate(gene_name = row.names(top_leu_vs_ctrl_Prog), 
+         color = ifelse(top_leu_vs_ctrl_Prog$avg_log2FC<(-1)&top_leu_vs_ctrl_Prog$p_val_adj<0.05, 
+                        "blue", ifelse(top_leu_vs_ctrl_Prog$avg_log2FC>1&top_leu_vs_ctrl_Prog$p_val_adj<0.05, 
+                                       "red", 
+                                       "grey")))
+
+#Labeling genes
+label_genes_prog <-top_leu_vs_ctrl_Prog[top_leu_vs_ctrl_Prog$gene_name %in% genes_Prog_leu_vs_ctrl, ]
+#Plot
+p_leu_vs_ctrl_Prog <- ggplot(top_leu_vs_ctrl_Prog, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = color), alpha = 0.7) +
+  geom_text_repel(data = label_genes_prog,
+                  aes(label = gene_name),
+                  size = 5,
+                  max.overlaps = 100,
+                  segment.color = NA) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)) +
+  labs(
+    title = "Prog cluster, AML vs Control",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted p-value"
+  ) +
+  scale_color_identity()
+p_leu_vs_ctrl_Prog 
+#Save plot
+ggsave("p_leu_vs_ctrl_Prog.pdf", plot = p_leu_vs_ctrl_Prog, width = 10, height = 8)
+ggsave("p_leu_vs_ctrl_Prog.jpeg", plot = p_leu_vs_ctrl_Prog, width = 10, height = 8)
+```
+
+
+## Plot "HSC cluster, AML vs Control"
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+top_leu_vs_ctrl_HSC <- markers_leu_vs_ctrl_HSC
+
+genes_HSC_leu_vs_ctrl_indexes <- c(1:10, (nrow(top_leu_vs_ctrl_HSC)-10):nrow(top_leu_vs_ctrl_HSC))
+genes_HSC_leu_vs_ctrl<- rownames(top_leu_vs_ctrl_HSC[genes_HSC_leu_vs_ctrl_indexes, ])
+
+top_leu_vs_ctrl_HSC <- top_leu_vs_ctrl_HSC |>
+  mutate(gene_name = row.names(top_leu_vs_ctrl_HSC), 
+         color = ifelse(top_leu_vs_ctrl_HSC$avg_log2FC<(-1)&top_leu_vs_ctrl_HSC$p_val_adj<0.05,
+                        "blue", ifelse(top_leu_vs_ctrl_HSC$avg_log2FC>1&top_leu_vs_ctrl_HSC$p_val_adj<0.05,
+                                       "red",
+                                       "grey")))
+#Labeling genes
+label_genes_HSC <- top_leu_vs_ctrl_HSC[top_leu_vs_ctrl_HSC$gene_name %in% genes_HSC_leu_vs_ctrl, ]
+
+#Plot
+p_leu_vs_ctrl_HSC <- ggplot(top_leu_vs_ctrl_HSC, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = color), alpha = 0.7) +
+  geom_text_repel(data = label_genes_HSC,
+                  aes(label = gene_name),
+                  size = 6,
+                  max.overlaps = 100,
+                  segment.color = NA
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)) +
+  labs(
+    title = "HSC cluster, AML vs Control",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted p-value"
+  ) +
+  scale_color_identity()
+p_leu_vs_ctrl_HSC
+
+#Save plot
+ggsave("p_leu_vs_ctrl_HSC.pdf", plot = p_leu_vs_ctrl_HSC, width = 10, height = 8)
+ggsave("p_leu_vs_ctrl_HSC.jpeg", plot = p_leu_vs_ctrl_HSC, width = 10, height = 8)
+```
+
+
+## Plot "HSC cluster, AML post-chemo vs pre-chemo"
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+top_HSC_postchemo_vs_prechemo <- markers_HSC_postchemo_vs_prechemo 
+
+genes_HSC_postchemo_vs_prechemo_indexes <- c(1:3, (nrow(top_HSC_postchemo_vs_prechemo)-3):nrow(top_HSC_postchemo_vs_prechemo))
+genes_HSC_postchemo_vs_prechemo <- rownames(top_HSC_postchemo_vs_prechemo[genes_HSC_postchemo_vs_prechemo_indexes, ])
+
+top_HSC_postchemo_vs_prechemo <- top_HSC_postchemo_vs_prechemo |>
+  mutate(gene_name = row.names(top_HSC_postchemo_vs_prechemo), 
+         color = ifelse(top_HSC_postchemo_vs_prechemo$avg_log2FC<(-1)&top_HSC_postchemo_vs_prechemo$p_val_adj<0.05,
+                        "blue", ifelse(top_HSC_postchemo_vs_prechemo$avg_log2FC>1&top_HSC_postchemo_vs_prechemo$p_val_adj<0.05,
+                                       "red",
+                                       "grey")))
+#Labeling genes
+label_genes_HSC_post_vs_pre <- top_HSC_postchemo_vs_prechemo[top_HSC_postchemo_vs_prechemo$gene_name %in% genes_HSC_postchemo_vs_prechemo, ]
+
+#Plot
+p_leu_postchemo_vs_prechemo_HSC <- ggplot(top_HSC_postchemo_vs_prechemo, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = color), alpha = 0.7) +
+  geom_text_repel(data = label_genes_HSC_post_vs_pre,
+                  aes(label = gene_name),
+                  size = 5,
+                  max.overlaps = 100,
+                  segment.color = NA) +
+  
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)) +
+  labs(
+    title = "HSC cluster, AML post-chemo vs pre-chemo",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted p-value"
+  ) +
+  scale_color_identity()
+
+p_leu_postchemo_vs_prechemo_HSC
+
+#Save plot
+ggsave("p_leu_postchemo_vs_prechemo_HSC.pdf", plot = p_leu_postchemo_vs_prechemo_HSC, width = 10, height = 8)
+ggsave("p_leu_postchemo_vs_prechemo_HSC.jpeg", plot =p_leu_postchemo_vs_prechemo_HSC, width = 10, height = 8)
+
+```
+
+
+## Plot "Prog cluster, AML post-chemo vs pre-chemo"
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+top_Prog_postchemo_vs_prechemo <-markers_Prog_postchemo_vs_prechemo 
+
+genes_Prog_postchemo_vs_prechemo_indexes <- c(1:10, (nrow(top_Prog_postchemo_vs_prechemo)-10):nrow(top_Prog_postchemo_vs_prechemo))
+genes_Prog_postchemo_vs_prechemo<- rownames(top_Prog_postchemo_vs_prechemo[genes_Prog_postchemo_vs_prechemo_indexes, ])
+
+top_Prog_postchemo_vs_prechemo <- top_Prog_postchemo_vs_prechemo |>
+  mutate(gene_name = row.names(top_Prog_postchemo_vs_prechemo), 
+         color = ifelse(top_Prog_postchemo_vs_prechemo$avg_log2FC<(-1)&top_Prog_postchemo_vs_prechemo$p_val_adj<0.05,
+                        "blue", ifelse(top_Prog_postchemo_vs_prechemo$avg_log2FC>1&top_Prog_postchemo_vs_prechemo$p_val_adj<0.05,
+                                       "red",
+                                       "grey")))
+#Labeling genes
+label_genes_Prog_post_vs_pre <- top_Prog_postchemo_vs_prechemo[top_Prog_postchemo_vs_prechemo$gene_name %in% genes_Prog_postchemo_vs_prechemo, ]
+
+#Plot
+p_leu_postchemo_vs_prechemo_Prog <- ggplot(top_Prog_postchemo_vs_prechemo, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = color), alpha = 0.6) +
+  geom_text_repel(data = label_genes_Prog_post_vs_pre,
+                  aes(label = gene_name),
+                  size = 5,
+                  max.overlaps = 100,
+                  segment.color = NA
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+  theme(
+    plot.title = element_text(size = 20),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18))+
+  labs(
+    title = "Prog cluster, AML post-chemo vs pre-chemo",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted p-value"
+  ) +
+  scale_color_identity()
+p_leu_postchemo_vs_prechemo_Prog
+
+#Save plot
+ggsave("p_leu_postchemo_vs_prechemo_Prog.pdf", plot = p_leu_postchemo_vs_prechemo_Prog, width = 10, height = 8)
+ggsave("p_leu_postchemo_vs_prechemo_Prog.jpeg", plot =p_leu_postchemo_vs_prechemo_Prog, width = 10, height = 8)
+```
+
+
+## Overrepresentation_enrichR
+##Import dbs
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+#dbs <- listEnrichrDbs()
+dbs <- c("GO_Biological_Process_2025", "KEGG_2021_Human", "MSigDB_Hallmark_2020")
+
+```
+
+
+##function - enrichR enrichment
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+#function - enrichR enrichment, 
+  #arguments:de_table,name_prefix, sample_names = c("Control", "Tumor"), cluster
+r_enrichment <- function(de_table, name_prefix, output_dir = "enrichr_results", 
+                         plot_title = NULL, sample_names = NULL, cluster = NULL, db_names = NULL) {
+  
+   if (!dir.exists(output_dir)) dir.create(output_dir)
+  
+  up_genes <- rownames(de_table[de_table$p_val_adj < 0.05 & de_table$avg_log2FC > 1, ])
+  down_genes <- rownames(de_table[de_table$p_val_adj < 0.05 & de_table$avg_log2FC < -1, ])
+  all_genes <- rownames(de_table[de_table$p_val_adj < 0.05, ])
+  
+# enrichR
+  up_enrich <- enrichr(up_genes, dbs)
+  down_enrich <- enrichr(down_genes, dbs)
+  all_enrich <- enrichr(all_genes, dbs)
+
+  # plot title
+  if (is.null(plot_title)) {
+    
+      db_labels <- c(
+      "GO_Biological_Process_2025" = "GO Biological Process",
+      "KEGG_2021_Human" = "KEGG",
+      "MSigDB_Hallmark_2020" = "MSigDB"
+    )
+db_title <- ifelse(is.null(db_names), "GO Biological Process", db_labels[db_names])
+    
+    plot_title <- paste(db_title, "enrichment analysis,",
+                        ifelse(!is.null(sample_names) & length(sample_names) == 2,
+                               paste(sample_names[1], "vs", sample_names[2]),
+                               "Samples Comparison"),
+                        ifelse(!is.null(cluster), paste("cluster", cluster), ""))
+  }
+  
+  saved_plots <- list()
+  
+  for (direction in c("up", "down", "all")) {
+    enrich_list <- switch(direction,
+                          up = up_enrich,
+                          down = down_enrich,
+                          all = all_enrich)
+    
+    gene_set <- switch(direction,
+                       up = up_genes,
+                       down = down_genes,
+                       all = all_genes)
+    
+    for (db in names(enrich_list)) {
+      df <- enrich_list[[db]]
+      
+      print(paste("Direction:", direction))
+      print(paste("DB:", db))
+      print(paste("Genes:", length(gene_set)))
+      print(head(gene_set))
+      print(paste("Rows in df:", if (!is.null(df)) nrow(df) else "NULL"))
+      
+      db_title <- db_labels[db]
+       if (!is.null(df) && nrow(df) > 0) {
+        write.csv(df, file = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, ".csv")), row.names = FALSE)
+        
+        # Overlap to numeric
+        df <- df %>%
+          mutate(Overlap = as.character(Overlap),
+                 GeneCountRatio = sapply(Overlap, function(x) {
+                   nums <- as.numeric(strsplit(x, "/")[[1]])
+                   if (length(nums) == 2) return(nums[1] / nums[2])
+                   else return(NA)  
+                 })) %>%
+          mutate(term = factor(Term, levels = rev(Term)),
+                 negLogP = -log10(Adjusted.P.value))
+        
+        top_terms <- df %>%
+          arrange(Adjusted.P.value) %>%
+          head(25)
+        
+        p <- ggplot(top_terms, aes(x = negLogP, y = term, color = Adjusted.P.value, size = GeneCountRatio)) +
+          geom_point() +
+          scale_color_gradient(low = "blue", high = "red") +
+          theme_minimal() +
+          labs(
+            title = paste(db_title, "enrichment analysis,", 
+                          ifelse(!is.null(sample_names) & length(sample_names) == 2,
+                                 paste(sample_names[1], "vs", sample_names[2]),
+                                 "Samples Comparison"),
+                          ifelse(!is.null(cluster), paste("cluster", cluster), "")),  
+            x = "-log10 Adjusted p-value",
+            y = "Term",
+            color = "adj. p-value",
+            size = "Gene Count Ratio"
+          ) +
+          theme(
+            plot.title = element_text(size = 16, face = "bold"),  
+            axis.title = element_text(size = 14),  
+            axis.text = element_text(size = 14),  
+            legend.title = element_text(size = 12),  
+            legend.text = element_text(size = 12)  
+          )
+        
+        saved_plots[[paste0(direction, "_", db)]] <- p
+        #different size
+        if (db == "GO_Biological_Process_2025") {
+          ggsave(filename = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, "_dotplot.pdf")), plot = p, width = 17, height = 7)
+          ggsave(filename = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, "_dotplot.jpeg")), plot = p, width = 17, height = 7)
+        } else {
+          ggsave(filename = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, "_dotplot.pdf")), plot = p, width = 12, height = 7)
+          ggsave(filename = file.path(output_dir, paste0(name_prefix, "_", direction, "_", db, "_dotplot.jpeg")), plot = p, width = 12, height = 7)
+        }
+      }
+    }
+  }
+  
+    return(list(
+    up = up_enrich,
+    down = down_enrich,
+    all = all_enrich,
+    saved_plots = saved_plots  
+  ))
+}
+
+```
+
+
+## enrichR cluster Prog
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+enrich_leu_vs_ctrl_Prog <- r_enrichment(de_table = markers_leu_vs_ctrl_Prog,
+                                        name_prefix = "leu_vs_ctrl_Prog", 
+                                        sample_names = c("AML", "Control"),
+                                       cluster = "Prog")
+```
+
+
+## enrichR cluster HSC
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+enrich_leu_vs_ctrl_HSC <- r_enrichment(de_table = markers_leu_vs_ctrl_HSC,
+                                        name_prefix = "leu_vs_ctrl_HSC", 
+                                        sample_names = c("AML", "Control"),
+                                        cluster = "HSC")
+```
+
+
+## enrichR cluster Prog postchemo_vs_prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+enrich_postchemo_vs_prechemo_Prog <- r_enrichment(de_table = markers_Prog_postchemo_vs_prechemo,
+                                       name_prefix = "postchemo_vs_prechemo_Prog", 
+                                       sample_names = c("Post-chemo", "Pre-chemo"),
+                                       cluster = "Prog")
+
+```
+
+
+## enrichR cluster HSC postchemo_vs_prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+enrich_postchemo_vs_prechemo_HSC <- r_enrichment(de_table = markers_HSC_postchemo_vs_prechemo,name_prefix = "postchemo_vs_prechemo_HSC", sample_names = c("Post-chemo", "Pre-chemo"),cluster = "HSC") #no terms
+```
+
+
+## Display the saved plots for cluster Prog postchemo vs prechemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+
+for (plot_name in names(enrich_postchemo_vs_prechemo_Prog$saved_plots)) {
+print(enrich_postchemo_vs_prechemo_Prog$saved_plots[[plot_name]])
+}
+
+```
+
+
+## Display the saved plots for cluster Prog AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+
+for (plot_name in names(enrich_leu_vs_ctrl_Prog$saved_plots)) {
+print(enrich_leu_vs_ctrl_Prog$saved_plots[[plot_name]])
+}
+
+```
+## Display the saved plots for cluster HSC AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+
+for (plot_name in names(enrich_leu_vs_ctrl_HSC$saved_plots)) {
+print(enrich_leu_vs_ctrl_HSC$saved_plots[[plot_name]])
+}
+
+```
+
+
+##GSEA 
+
+##FindMarkers - ALL genes(repeat for GSEA analysis)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+leu_vs_ctrl_HSC <- FindMarkers(subset_cluster_HSC,
+                                       ident.1 = "Leukemia",
+                                       ident.2 = "Healthy",min.pct=0.15)
+leu_vs_ctrl_Prog <- FindMarkers(subset_cluster_Prog,
+                                        ident.1 = "Leukemia",
+                                        ident.2 = "Healthy",min.pct=0.15)
+HSC_postchemo_vs_prechemo <- FindMarkers(HSC_condition_obj, 
+                                         ident.1 = "post_chemo", 
+                                         ident.2 = "pre_chemo", 
+                                         min.pct=0.15)
+Prog_postchemo_vs_prechemo <- FindMarkers(Prog_condition_obj, 
+                                          ident.1 = "post_chemo", 
+                                          ident.2 = "pre_chemo",
+                                          min.pct=0.15)
+```
+
+
+## GSEA Preparation: Ranking Genes for Prog Cluster (AML vs Control)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+#Copy results
+gsea_leu_vs_ctrl_Prog <- leu_vs_ctrl_Prog
+
+#Fix zero adjusted p-values
+gsea_leu_vs_ctrl_Prog$p_val_adj<- ifelse(gsea_leu_vs_ctrl_Prog$p_val_adj==0.0, 1e-300, gsea_leu_vs_ctrl_Prog$p_val_adj)
+
+#Create ranking metric
+gsea_leu_vs_ctrl_Prog <- gsea_leu_vs_ctrl_Prog |>
+  mutate(ranking = sign(avg_log2FC)*(-log10(p_val_adj))) |>
+  arrange(-ranking)
+
+# Extract gene ranks
+gene_ranks <- gsea_leu_vs_ctrl_Prog$ranking
+names(gene_ranks) <- row.names(gsea_leu_vs_ctrl_Prog)
+
+# Map gene symbols to Entrez IDs
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+# Rebuild ranked list using Entrez IDs
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+
+
+##Run GSEA (GOBP) for AML vs Control in Prog Cluster
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_GOBP_leu_vs_ctrl_Prog <- gseGO(
+  geneList = gene_ranks_entrez,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05, 
+  verbose = TRUE)
+
+# View and export GSEA results
+View(gsea_GOBP_leu_vs_ctrl_Prog@result)
+write.csv(gsea_GOBP_leu_vs_ctrl_Prog@result, "gsea_GOBP_leu_vs_ctrl_Prog.csv")
+```
+
+
+## Plot Top GSEA Results Prog cluster AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_GOBP_leu_vs_ctrl_Prog@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA GO Biological Process, Prog: AML vs Control"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    plot.title = element_text(face = "bold", size = 14))
+```
+
+
+##GSEA: GOBP (Prog Cluster - Post-chemo vs Pre-chemo)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+#Copy results
+gsea_postchemo_vs_prechemo_Prog <- Prog_postchemo_vs_prechemo
+
+#Fix zero adjusted p-values
+gsea_postchemo_vs_prechemo_Prog$p_val_adj<- ifelse(gsea_postchemo_vs_prechemo_Prog$p_val_adj==0.0, 1e-300, gsea_postchemo_vs_prechemo_Prog$p_val_adj)
+
+#Create ranking metric
+gsea_postchemo_vs_prechemo_Prog <- gsea_postchemo_vs_prechemo_Prog |>
+  mutate(ranking = sign(avg_log2FC)*(-log10(p_val_adj))) |>
+  arrange(-ranking)
+
+# Extract gene ranks
+gene_ranks <- gsea_postchemo_vs_prechemo_Prog$ranking
+names(gene_ranks) <- row.names(gsea_postchemo_vs_prechemo_Prog)
+
+# Map gene symbols to Entrez IDs
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+# Rebuild ranked list using Entrez IDs
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+
+
+##Run GSEA (GOBP) for Post-chemo vs Pre-chemo in Prog Cluster
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_GOPB_postchemo_vs_prechemo_Prog <- gseGO(
+  geneList = gene_ranks_entrez,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.25,  #p<0.05 - no terms
+  verbose = TRUE)
+
+#Export results
+View(gsea_GOPB_postchemo_vs_prechemo_Prog@result)
+write.csv(gsea_GOPB_postchemo_vs_prechemo_Prog@result, "gsea_GOPB_postchemo_vs_prechemo_Prog.csv")
+```
+## Plot Top GSEA Results for Prog cluster postchemo vs prechemo 
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Prepare for plotting
+gsea_df <- as.data.frame(gsea_GOPB_postchemo_vs_prechemo_Prog@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA GO Biological Process, Prog: AML post-chemo vs AML pre-chemo"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(face = "bold", size = 14))
+```
+
+
+##GSEA - MSigDB
+##Load MSigDB Hallmark gene sets
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+
+msigdb_df <- msigdbr(species = "Homo sapiens", category = "H")
+msigdb_df <- msigdb_df %>% 
+  dplyr::select(gs_name, gene_symbol)  
+
+#Prepare ranked gene list for Prog cluster - AML vs Control
+
+gene_ranks <- gsea_leu_vs_ctrl_Prog$ranking
+names(gene_ranks) <- row.names(gsea_leu_vs_ctrl_Prog)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+
+gsea_MSigDB_leu_vs_ctrl_Prog <- GSEA(
+  geneList = gene_ranks,
+  TERM2GENE = msigdb_df,
+  pvalueCutoff = 0.25 #p<0.05 - few terms
+  )
+
+# View and export GSEA results
+View(gsea_MSigDB_leu_vs_ctrl_Prog@result)
+write.csv(gsea_MSigDB_leu_vs_ctrl_Prog@result, "gsea_MSigDB_leu_vs_ctrl_Prog.csv")
+```
+
+
+## Visualize top enriched pathways
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_MSigDB_leu_vs_ctrl_Prog@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA MSigDB, Prog: AML vs Control"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 14))
+```
+
+
+##Prepare ranked gene list for Post-Chemo vs Pre-Chemo (Prog cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gene_ranks <- gsea_postchemo_vs_prechemo_Prog$ranking
+names(gene_ranks) <- row.names(gsea_postchemo_vs_prechemo_Prog)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+
+
+##Run GSEA - MSigDB (Post-Chemo vs Pre-Chemo, Prog cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_MSigDB_postchemo_vs_prechemo_Prog <- GSEA(
+  geneList = gene_ranks,
+  TERM2GENE = msigdb_df,
+  pvalueCutoff = 0.25 #p<0.05 - few terms 
+)
+# View and export GSEA results
+View(gsea_MSigDB_postchemo_vs_prechemo_Prog@result)
+write.csv(gsea_MSigDB_postchemo_vs_prechemo_Prog@result, "gsea_MSigDB_postchemo_vs_prechemo_Prog.csv")
+```
+
+
+##Visualize top enriched pathways for Post-Chemo vs Pre-Chemo (Prog cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_MSigDB_postchemo_vs_prechemo_Prog@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA MSigDB, Prog: AML post-chemo vs AML pre-chemo"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 14))
+```
+
+
+## GSEA - HSC cluster - AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_leu_vs_ctrl_HSC <- leu_vs_ctrl_HSC
+gsea_leu_vs_ctrl_HSC <- gsea_leu_vs_ctrl_HSC |>
+  mutate(ranking = sign(avg_log2FC)*(-log10(p_val_adj))) |>
+  arrange(-ranking)
+
+gene_ranks <- gsea_leu_vs_ctrl_HSC$ranking
+names(gene_ranks) <- row.names(gsea_leu_vs_ctrl_HSC)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+
+
+## Run GSEA GOPB (AML vs Control, HSC cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_GOBP_leu_vs_ctrl_HSC <- gseGO(
+  geneList = gene_ranks_entrez,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.25, # p<0.05, p<0.25 - no enriched terms
+  verbose = TRUE)
+```
+
+
+##Prepare ranked gene list for Post-Chemo vs Pre-Chemo (HSC cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_postchemo_vs_prechemo_HSC <- HSC_postchemo_vs_prechemo
+gsea_postchemo_vs_prechemo_HSC <- gsea_postchemo_vs_prechemo_HSC |>
+  mutate(ranking = sign(avg_log2FC)*(-log10(p_val_adj))) |>
+  arrange(-ranking)
+
+gene_ranks <- gsea_postchemo_vs_prechemo_HSC$ranking
+names(gene_ranks) <- row.names(gsea_postchemo_vs_prechemo_HSC)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+##Run GSEA GOPB (Post-Chemo vs Pre-Chemo, HSC cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_GOPB_postchemo_vs_prechemo_HSC <- gseGO(
+  geneList = gene_ranks_entrez,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.25, # p<0.05, p<0.25 - no enriched terms 
+  verbose = TRUE)
+```
+
+
+##Load MSigDB Hallmark gene sets
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+msigdb_df <- msigdbr(species = "Homo sapiens", category = "H")
+msigdb_df <- msigdb_df %>% 
+  dplyr::select(gs_name, gene_symbol)  
+```
+
+
+##Prepare ranked gene list for HSC cluster - AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gene_ranks <- gsea_leu_vs_ctrl_HSC$ranking
+names(gene_ranks) <- row.names(gsea_leu_vs_ctrl_HSC)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+
+
+##Run GSEA
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_MSigDB_leu_vs_ctrl_HSC <- GSEA(
+  geneList = gene_ranks,
+  TERM2GENE = msigdb_df,
+  pvalueCutoff = 0.25 #p<0.05 only few terms
+)
+# View and export GSEA results
+View(gsea_MSigDB_leu_vs_ctrl_HSC@result)
+write.csv(gsea_MSigDB_leu_vs_ctrl_HSC@result, "gsea_MSigDB_leu_vs_ctrl_HSC.csv")
+```
+
+
+## Plot top enriched pathways for HSC cluster - AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_MSigDB_leu_vs_ctrl_HSC@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA MSigDB, HSC: AML vs Control"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 14))
+```
+
+
+## Prepare ranked gene list for HSC cluster - Post-chemo vs Pre-chemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gene_ranks <- gsea_postchemo_vs_prechemo_HSC$ranking
+names(gene_ranks) <- row.names(gsea_postchemo_vs_prechemo_HSC)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+
+gsea_MSigDB_postchemo_vs_prechemo_HSC <- GSEA(
+  geneList = gene_ranks,
+  TERM2GENE = msigdb_df,
+  pvalueCutoff = 0.25 #p<0.05 - few terms 
+)
+# View and export GSEA results
+View(gsea_MSigDB_postchemo_vs_prechemo_HSC@result)
+write.csv(gsea_MSigDB_postchemo_vs_prechemo_HSC@result, "gsea_MSigDB_postchemo_vs_prechemo_HSC.csv")
+```
+
+
+## Plot enriched pathways for HSC cluster - Post-chemo vs Pre-chemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_MSigDB_postchemo_vs_prechemo_HSC@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA MSigDB, HSC: AML post-chemo vs AML pre-chemo"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 14))
+```
