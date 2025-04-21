@@ -29,6 +29,12 @@ install.packages("Seurat")
 install.packages("ggplot2")
 install.packages("ggrepel")
 install.packages("enrichR")
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("clusterProfiler", force
+                     = TRUE)
+BiocManager::install("org.Hs.eg.db")
+install.packages('msigdbr')
 
 ```
 ##Import packages
@@ -39,12 +45,15 @@ library(Seurat)
 library(ggplot2)
 library(ggrepel)
 library(enrichR)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(msigdbr)
 ```
 
 ## Read seurat_object_after_clustering
 
 ```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
-seurat_obj <- readRDS("seurat_object_after_clustering.rds")
+seurat_obj <- readRDS("C:/Users/Doma/Desktop/RSTUDIO/ProjectAML - kopie - kopie/seurat_object_after_clustering.rds")
 seurat_obj
 table(Idents(seurat_obj))
 View(seurat_obj@meta.data)
@@ -482,4 +491,404 @@ for (plot_name in names(enrich_leu_vs_ctrl_HSC$saved_plots)) {
 print(enrich_leu_vs_ctrl_HSC$saved_plots[[plot_name]])
 }
 
+```
+##GSEA 
+
+##FindMarkers - ALL genes(repeat for GSEA analysis)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+leu_vs_ctrl_HSC <- FindMarkers(subset_cluster_HSC,
+                                       ident.1 = "Leukemia",
+                                       ident.2 = "Healthy",min.pct=0.15)
+leu_vs_ctrl_Prog <- FindMarkers(subset_cluster_Prog,
+                                        ident.1 = "Leukemia",
+                                        ident.2 = "Healthy",min.pct=0.15)
+HSC_postchemo_vs_prechemo <- FindMarkers(HSC_condition_obj, 
+                                         ident.1 = "post_chemo", 
+                                         ident.2 = "pre_chemo", 
+                                         min.pct=0.15)
+Prog_postchemo_vs_prechemo <- FindMarkers(Prog_condition_obj, 
+                                          ident.1 = "post_chemo", 
+                                          ident.2 = "pre_chemo",
+                                          min.pct=0.15)
+```
+## GSEA Preparation: Ranking Genes for Prog Cluster (AML vs Control)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+#Copy results
+gsea_leu_vs_ctrl_Prog <- leu_vs_ctrl_Prog
+
+#Fix zero adjusted p-values
+gsea_leu_vs_ctrl_Prog$p_val_adj<- ifelse(gsea_leu_vs_ctrl_Prog$p_val_adj==0.0, 1e-300, gsea_leu_vs_ctrl_Prog$p_val_adj)
+
+#Create ranking metric
+gsea_leu_vs_ctrl_Prog <- gsea_leu_vs_ctrl_Prog |>
+  mutate(ranking = sign(avg_log2FC)*(-log10(p_val_adj))) |>
+  arrange(-ranking)
+
+# Extract gene ranks
+gene_ranks <- gsea_leu_vs_ctrl_Prog$ranking
+names(gene_ranks) <- row.names(gsea_leu_vs_ctrl_Prog)
+
+# Map gene symbols to Entrez IDs
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+# Rebuild ranked list using Entrez IDs
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+##Run GSEA (GOBP) for AML vs Control in Prog Cluster
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_GOBP_leu_vs_ctrl_Prog <- gseGO(
+  geneList = gene_ranks_entrez,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05, 
+  verbose = TRUE)
+
+# View and export GSEA results
+View(gsea_GOBP_leu_vs_ctrl_Prog@result)
+write.csv(gsea_GOBP_leu_vs_ctrl_Prog@result, "gsea_GOBP_leu_vs_ctrl_Prog.csv")
+```
+
+## Plot Top GSEA Results Prog cluster AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_GOBP_leu_vs_ctrl_Prog@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA GO Biological Process, Prog: AML vs Control"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    plot.title = element_text(face = "bold", size = 14))
+```
+##GSEA: GOBP (Prog Cluster - Post-chemo vs Pre-chemo)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+#Copy results
+gsea_postchemo_vs_prechemo_Prog <- Prog_postchemo_vs_prechemo
+
+#Fix zero adjusted p-values
+gsea_postchemo_vs_prechemo_Prog$p_val_adj<- ifelse(gsea_postchemo_vs_prechemo_Prog$p_val_adj==0.0, 1e-300, gsea_postchemo_vs_prechemo_Prog$p_val_adj)
+
+#Create ranking metric
+gsea_postchemo_vs_prechemo_Prog <- gsea_postchemo_vs_prechemo_Prog |>
+  mutate(ranking = sign(avg_log2FC)*(-log10(p_val_adj))) |>
+  arrange(-ranking)
+
+# Extract gene ranks
+gene_ranks <- gsea_postchemo_vs_prechemo_Prog$ranking
+names(gene_ranks) <- row.names(gsea_postchemo_vs_prechemo_Prog)
+
+# Map gene symbols to Entrez IDs
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+# Rebuild ranked list using Entrez IDs
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+##Run GSEA (GOBP) for Post-chemo vs Pre-chemo in Prog Cluster
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_GOPB_postchemo_vs_prechemo_Prog <- gseGO(
+  geneList = gene_ranks_entrez,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.25,  #p<0.05 - no terms
+  verbose = TRUE)
+
+#Export results
+View(gsea_GOPB_postchemo_vs_prechemo_Prog@result)
+write.csv(gsea_GOPB_postchemo_vs_prechemo_Prog@result, "gsea_GOPB_postchemo_vs_prechemo_Prog.csv")
+```
+## Plot Top GSEA Results for Prog cluster postchemo vs prechemo 
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Prepare for plotting
+gsea_df <- as.data.frame(gsea_GOPB_postchemo_vs_prechemo_Prog@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA GO Biological Process, Prog: AML post-chemo vs AML pre-chemo"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(face = "bold", size = 14))
+```
+
+
+##GSEA - MSigDB
+##Load MSigDB Hallmark gene sets
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+
+msigdb_df <- msigdbr(species = "Homo sapiens", category = "H")
+msigdb_df <- msigdb_df %>% 
+  dplyr::select(gs_name, gene_symbol)  
+
+#Prepare ranked gene list for Prog cluster - AML vs Control
+
+gene_ranks <- gsea_leu_vs_ctrl_Prog$ranking
+names(gene_ranks) <- row.names(gsea_leu_vs_ctrl_Prog)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+
+gsea_MSigDB_leu_vs_ctrl_Prog <- GSEA(
+  geneList = gene_ranks,
+  TERM2GENE = msigdb_df,
+  pvalueCutoff = 0.25 #p<0.05 - few terms
+  )
+
+# View and export GSEA results
+View(gsea_MSigDB_leu_vs_ctrl_Prog@result)
+write.csv(gsea_MSigDB_leu_vs_ctrl_Prog@result, "gsea_MSigDB_leu_vs_ctrl_Prog.csv")
+```
+## Visualize top enriched pathways
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_MSigDB_leu_vs_ctrl_Prog@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA MSigDB, Prog: AML vs Control"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 14))
+```
+##Prepare ranked gene list for Post-Chemo vs Pre-Chemo (Prog cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gene_ranks <- gsea_postchemo_vs_prechemo_Prog$ranking
+names(gene_ranks) <- row.names(gsea_postchemo_vs_prechemo_Prog)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+##Run GSEA - MSigDB (Post-Chemo vs Pre-Chemo, Prog cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_MSigDB_postchemo_vs_prechemo_Prog <- GSEA(
+  geneList = gene_ranks,
+  TERM2GENE = msigdb_df,
+  pvalueCutoff = 0.25 #p<0.05 - few terms 
+)
+# View and export GSEA results
+View(gsea_MSigDB_postchemo_vs_prechemo_Prog@result)
+write.csv(gsea_MSigDB_postchemo_vs_prechemo_Prog@result, "gsea_MSigDB_postchemo_vs_prechemo_Prog.csv")
+```
+##Visualize top enriched pathways for Post-Chemo vs Pre-Chemo (Prog cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_MSigDB_postchemo_vs_prechemo_Prog@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA MSigDB, Prog: AML post-chemo vs AML pre-chemo"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 14))
+```
+
+## GSEA - HSC cluster - AML vs Control
+
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_leu_vs_ctrl_HSC <- leu_vs_ctrl_HSC
+gsea_leu_vs_ctrl_HSC <- gsea_leu_vs_ctrl_HSC |>
+  mutate(ranking = sign(avg_log2FC)*(-log10(p_val_adj))) |>
+  arrange(-ranking)
+
+gene_ranks <- gsea_leu_vs_ctrl_HSC$ranking
+names(gene_ranks) <- row.names(gsea_leu_vs_ctrl_HSC)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+## Run GSEA GOPB (AML vs Control, HSC cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_GOBP_leu_vs_ctrl_HSC <- gseGO(
+  geneList = gene_ranks_entrez,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.25, # p<0.05, p<0.25 - no enriched terms
+  verbose = TRUE)
+```
+##Prepare ranked gene list for Post-Chemo vs Pre-Chemo (HSC cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_postchemo_vs_prechemo_HSC <- HSC_postchemo_vs_prechemo
+gsea_postchemo_vs_prechemo_HSC <- gsea_postchemo_vs_prechemo_HSC |>
+  mutate(ranking = sign(avg_log2FC)*(-log10(p_val_adj))) |>
+  arrange(-ranking)
+
+gene_ranks <- gsea_postchemo_vs_prechemo_HSC$ranking
+names(gene_ranks) <- row.names(gsea_postchemo_vs_prechemo_HSC)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+##Run GSEA GOPB (Post-Chemo vs Pre-Chemo, HSC cluster)
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_GOPB_postchemo_vs_prechemo_HSC <- gseGO(
+  geneList = gene_ranks_entrez,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.25, # p<0.05, p<0.25 - no enriched terms 
+  verbose = TRUE)
+```
+##Load MSigDB Hallmark gene sets
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+msigdb_df <- msigdbr(species = "Homo sapiens", category = "H")
+msigdb_df <- msigdb_df %>% 
+  dplyr::select(gs_name, gene_symbol)  
+```
+##Prepare ranked gene list for HSC cluster - AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gene_ranks <- gsea_leu_vs_ctrl_HSC$ranking
+names(gene_ranks) <- row.names(gsea_leu_vs_ctrl_HSC)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+```
+##Run GSEA
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_MSigDB_leu_vs_ctrl_HSC <- GSEA(
+  geneList = gene_ranks,
+  TERM2GENE = msigdb_df,
+  pvalueCutoff = 0.25 #p<0.05 only few terms
+)
+# View and export GSEA results
+View(gsea_MSigDB_leu_vs_ctrl_HSC@result)
+write.csv(gsea_MSigDB_leu_vs_ctrl_HSC@result, "gsea_MSigDB_leu_vs_ctrl_HSC.csv")
+```
+## Plot top enriched pathways for HSC cluster - AML vs Control
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_MSigDB_leu_vs_ctrl_HSC@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA MSigDB, HSC: AML vs Control"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 14))
+```
+## Prepare ranked gene list for HSC cluster - Post-chemo vs Pre-chemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gene_ranks <- gsea_postchemo_vs_prechemo_HSC$ranking
+names(gene_ranks) <- row.names(gsea_postchemo_vs_prechemo_HSC)
+
+gene_df <- bitr(names(gene_ranks), fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+gene_ranks_entrez <- gene_ranks[gene_df$SYMBOL]
+names(gene_ranks_entrez) <- gene_df$ENTREZID
+
+gsea_MSigDB_postchemo_vs_prechemo_HSC <- GSEA(
+  geneList = gene_ranks,
+  TERM2GENE = msigdb_df,
+  pvalueCutoff = 0.25 #p<0.05 - few terms 
+)
+# View and export GSEA results
+View(gsea_MSigDB_postchemo_vs_prechemo_HSC@result)
+write.csv(gsea_MSigDB_postchemo_vs_prechemo_HSC@result, "gsea_MSigDB_postchemo_vs_prechemo_HSC.csv")
+```
+## Plot enriched pathways for HSC cluster - Post-chemo vs Pre-chemo
+```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
+gsea_df <- as.data.frame(gsea_MSigDB_postchemo_vs_prechemo_HSC@result)
+
+top_terms <- gsea_df %>%
+  arrange(p.adjust) %>%
+  head(20) %>%
+  arrange(desc(NES)) %>% 
+  mutate(Description = factor(Description, levels = rev(Description)))  
+
+ggplot(top_terms, aes(x = NES, y = Description, 
+                      size = setSize, color = p.adjust)) +
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red", name = "adj. p-value") +
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = "Pathway",
+    title = "GSEA MSigDB, HSC: AML post-chemo vs AML pre-chemo"
+  ) +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        plot.title = element_text(face = "bold", size = 14))
 ```
