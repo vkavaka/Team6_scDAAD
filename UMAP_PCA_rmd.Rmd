@@ -1,0 +1,303 @@
+---
+title: "Project"
+author: "illia"
+date: "2025-04-08"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(clustree)
+library(cluster)
+library(ggplot2)
+library(SingleR)
+library(celldex)
+library(monocle3)
+library(igraph)
+library(ggraph)
+library(slingshot)
+library(purrr)
+```
+
+```{r}
+# Дивимося на дерево кластерів, щоб зрозуміти, яке значення resolution краще обрати :
+prepared_seurat_obj_standard <- FindClusters(prepared_seurat_obj_standard, resolution = seq(from = 0.2, to = 3, by = 0.2))
+clustree(prepared_seurat_obj_standard, prefix = "RNA_snn_res.")
+```
+
+
+
+
+```{r}
+# Знаходими кластери
+prepared_seurat_obj_standard <- FindClusters(prepared_seurat_obj_standard, resolution = 0.71)
+
+# Малюємо umap 
+DimPlot(prepared_seurat_obj_standard, reduction = "umap", label = TRUE, label.box = TRUE, repel = TRUE)
+
+```
+
+
+```{r}
+# Знаходимо маркерні гени, видаляємо не потрібні маркери.
+featuresobj <- rownames(prepared_seurat_obj_standard)
+markers.remove <- grep(pattern = "^TRAV|^TRBV|^TRGV|^TRDV|^RPL|^RPS", x = rownames(prepared_seurat_obj_standard), value = TRUE) #remove TCR variable genes and ribosomal genes from the analysis
+featuresobj <- featuresobj[!(featuresobj%in%markers.remove)]
+prepared_seurat_obj_standard <- JoinLayers(prepared_seurat_obj_standard)
+prepared_seurat_obj_standard.markers <- FindAllMarkers(object = prepared_seurat_obj_standard, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, features = featuresobj)
+```
+
+
+```{r}
+#visualise top 10, top50, top5  markers by avg Fold Change (log2)
+top50 <- prepared_seurat_obj_standard.markers %>% group_by(cluster) %>% top_n(n = 50, wt = avg_log2FC)
+top50
+top10 <- prepared_seurat_obj_standard.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+top5 <- prepared_seurat_obj_standard.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+View(top5)
+write.csv(top50, "Top50_markers.csv", row.names = FALSE, quote = TRUE)
+write.csv(top10, "Top10_markers.csv", row.names = FALSE, quote = TRUE)
+write.csv(top5, "Top5_markers.csv", row.names = FALSE, quote = TRUE)
+#look into the average heatmap
+cluster.averages_prepared_seurat_obj_standard.markers <- AverageExpression(prepared_seurat_obj_standard, assay = "RNA", return.seurat = TRUE) # , verbose = FALSE)
+```
+
+
+```{r}
+# Будуємо heatmap для того, щоб бачити дифф. експресію між кластерами. 
+options(repr.plot.width=8, repr.plot.height=4)
+
+DoHeatmap(prepared_seurat_obj_standard, features = top5$gene) +
+  theme(axis.text.y = element_text(size = 7))
+```
+
+
+```{r}
+# Анотація клітин, за допомогою пакету SingleR, який буде шукати співпадіння з базою данних HumanPrimaryCellAtlasData, та на виході дасть анотацію на кожну клітину 
+# завантажуємо reference dataset
+ref <- HumanPrimaryCellAtlasData()
+
+
+prepared_seurat_obj_standard_anotate <- GetAssayData(prepared_seurat_obj_standard, slot = "data")
+labels <- SingleR(test = prepared_seurat_obj_standard_anotate, ref = ref, labels = ref$label.main)
+unique(labels$labels)
+
+# Анатуємо кожну клітину окремо. 
+prepared_seurat_obj_standard$SingleR_label <- labels$labels
+
+
+# Робимо графік, залежності, скільки ЯКИХ клітин в кожному кластері. 
+df <- data.frame(
+  Cluster = prepared_seurat_obj_standard$seurat_clusters,
+  CellType = prepared_seurat_obj_standard$SingleR_label
+)
+
+#Робимо підрахунок 
+df_summary <- df %>%
+  group_by(Cluster, CellType) %>%
+  summarise(Count = n()) %>%
+  ungroup()
+
+# Виводимо графік 
+ggplot(df_summary, aes(x = factor(Cluster), y = Count, fill = CellType)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(x = "Кластер", y = "Количество клеток", fill = "Тип клеток") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+
+##! ПО КЛАСТЕРАМ!! РОБИМО туж саму анотацію клітин, тільки на цей раз, клітини груперуємо по кластерам, і до цих кластерів застосовуємо алгоритми
+# пошуку типу клітини. Тоб-то один кластер - як чисто один тип клітин. 
+
+cluster_exp <- AverageExpression(prepared_seurat_obj_standard, return.seurat = FALSE)$RNA
+
+cluster_labels <- SingleR(test = cluster_exp, ref = ref, labels = ref$label.main)
+prepared_seurat_obj_standard$cell_type <- cluster_labels$labels
+print(cluster_labels)
+View(cluster_labels)
+```
+
+```{r}
+# Будуєм гарний графік "з точичками :)", щоб бачити, які ключові генні відміності, між кластерами
+
+Seurat::DotPlot(prepared_seurat_obj_standard, features = unique(top5$gene)) +
+  # this second part of the code is just for esthetics :
+  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 90, 
+                                                     vjust = 1,
+                                                     size = 8, 
+                                                     hjust = 1)) +
+  Seurat::NoLegend()
+
+```
+
+```{r}
+
+# Цей участок коду, відображає повну, для кожного гену, місце на UMAP де знаходяться клітини, з цим геном. Графіки побудовані на основі top 5 heatmap. Для кожного кластеру. 
+
+#Cluster 0
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c("IL7R", "TCF7","LEF1","CCR7","TRAT1"), 
+            reduction = "umap"
+)
+
+FeaturePlot()
+
+#Cluster 1
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c("S100A12", "SERPINA1","MAFB","CD14","C5AR1"), 
+            reduction = "umap"
+)
+
+FeaturePlot()
+
+#Cluster 2+3
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('FAM30A',
+                         'GUCY1A3',
+                         'ANGPT1',
+                         'CD34',
+                         'NPR3',
+                         'SPINK2',
+                         'NRIP1'), 
+            reduction = "umap"
+)
+
+FeaturePlot()
+
+#Cluster 4
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('FAM30A',
+                         'GUCY1A3',
+                         'ANGPT1',
+                         'CD34',
+                         'NPR3',
+                         'SPINK2',
+                         'NRIP1'), 
+            reduction = "umap"
+)
+
+FeaturePlot()
+
+
+#Cluster 5
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('RAD51AP1',
+                         'TK1',
+                         'RRM2',
+                         'TYMS',
+                         'ESCO2'), 
+            reduction = "umap"
+)
+
+#Cluster 6
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('GZMA',
+                         'PRF1',
+                         'KLRD1',
+                         'GZMH',
+                         'GZMB'), 
+            reduction = "umap"
+)
+
+#Cluster 7
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('CA1',
+                         'RHAG',
+                         'GYPA',
+                         'HBM',
+                         'GYPB'), 
+            reduction = "umap"
+)
+
+#Cluster 8
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('NAPSB',
+                         'FCER1A',
+                         'PKIB',
+                         'MRC1',
+                         'S100B'), 
+            reduction = "umap"
+)
+
+#Cluster 9
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('ASPM',
+                         'HMMR',
+                         'UBE2C',
+                         'CEP55',
+                         'PLK1'), 
+            reduction = "umap"
+)
+
+#Cluster 10
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('ELK2AP',
+                         'IGLL5',
+                         'TNFRSF17',
+                         'SDC1',
+                         'CADPS2'), 
+            reduction = "umap"
+)
+
+#Cluster 11
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('GATA2',
+                         'CNRIP1',
+                         'MED12L',
+                         'CPA3',
+                         'ELANE'), 
+            reduction = "umap"
+)
+
+
+#Cluster 12
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('AZU1',
+                         'PRTN3',
+                         'MS4A1'), 
+            reduction = "umap"
+)
+
+#Cluster 13
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('BANK1',
+                        'CD79A',
+                         'LINC00926',
+                         'FCRL1'), 
+            reduction = "umap"
+)
+
+#Cluster 14
+FeaturePlot(prepared_seurat_obj_standard, 
+            features = c('MCM4',
+                         'PAICS',
+                         'DHFR',
+                         'PCNA'), 
+            reduction = "umap"
+)
+```
+
+
+```{r}
+# Переіменування + обєднання однакових кластерів в один 
+
+
+new_cluster_names <- c("Naive-T", "Mono", "Prog", "Prog", "proliferation-T", 
+                                          "NK", "Pro-mono", "Erytrocyte", "DC", "Pro-B", 
+                                          "Plasma", "Mast/Basophile-like", "Neutrophil", 
+                                          "B-cell", "HSC")
+
+names(new_cluster_names) <- levels(prepared_seurat_obj_standard)
+prepared_seurat_obj_standard <- RenameIdents(prepared_seurat_obj_standard, new_cluster_names)
+levels(prepared_seurat_obj_standard)
+
+Idents(prepared_seurat_obj_standard) <- factor(Idents(prepared_seurat_obj_standard), levels = c("NK", "proliferation-T", "Naive-T", "Neutrophil", "Mast/Basophile-like", "Plasma", "B-cell", "Pro-B", "Erytrocyte", "DC", "Mono", "Pro-mono", "Prog", "HSC"))
+prepared_seurat_obj_standard$cell_type <- factor(Idents(prepared_seurat_obj_standard), levels = c("NK", "proliferation-T", "Naive-T", "Neutrophil", "Mast/Basophile-like", "Plasma", "B-cell", "Pro-B", "Erytrocyte", "DC", "Mono", "Pro-mono", "Prog", "HSC"))
+```
+
