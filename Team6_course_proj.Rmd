@@ -657,7 +657,7 @@ saveRDS(prepared_seurat_obj_standard, "seurat_object_after_clustering.RDS")
 ## Read seurat_object_after_clustering
 
 ```{r, echo=TRUE, results="hide", message=FALSE, warning=FALSE}
-seurat_obj <- readRDS("seurat_object_after_clustering.RDS")
+seurat_obj <- readRDS("C:/Users/User/Desktop/R/project/PrAML/seurat_object_after_clustering.RDS")
 seurat_obj
 table(Idents(seurat_obj))
 View(seurat_obj@meta.data)
@@ -932,7 +932,7 @@ ggsave("p_leu_postchemo_vs_prechemo_Prog.pdf", plot = p_leu_postchemo_vs_prechem
 ggsave("p_leu_postchemo_vs_prechemo_Prog.jpeg", plot =p_leu_postchemo_vs_prechemo_Prog, width = 10, height = 8)
 ```
 
-## Common disregulated genes HSC and Prog, EnrichR 
+## Common disregulated genes AML HSC and Prog clusters, EnrichR 
 ```{r}
 # Define the function to filter up/down regulated genes
 get_filtered_genes <- function(de_table, direction = "up", logfc_thresh = 1) {
@@ -1034,6 +1034,7 @@ ggsave("top_10_upregulated_GO_terms_HSC_vs_Prog.jpeg", up_go_plot, width = 12, h
 up_kegg_plot <- create_enrichment_plot(enrichr_up_kegg, "KEGG", "Upregulated")
 ggsave("top_10_upregulated_KEGG_terms_HSC_vs_Prog.pdf", up_kegg_plot, width = 12, height = 8)
 ggsave("top_10_upregulated_KEGG_terms_HSC_vs_Prog.jpeg", up_kegg_plot, width = 12, height = 8)
+print(up_kegg_plot)
 
 # MSigDB (Upregulated)
 up_msigdb_plot <- create_enrichment_plot(enrichr_up_msigdb, "MSigDB", "Upregulated")
@@ -1055,6 +1056,7 @@ ggsave("top_10_downregulated_KEGG_terms_HSC_vs_Prog.jpeg", down_kegg_plot, width
 down_msigdb_plot <- create_enrichment_plot(enrichr_down_msigdb, "MSigDB", "Downregulated")
 ggsave("top_10_downregulated_MSigDB_terms_HSC_vs_Prog.pdf", down_msigdb_plot, width = 12, height = 8)
 ggsave("top_10_downregulated_MSigDB_terms_HSC_vs_Prog.jpeg", down_msigdb_plot, width = 12, height = 8)
+print(down_msigdb_plot)
 
 # Save enriched results as CSV for further analysis
 write.csv(enrichr_up_go, "enrichr_upregulated_GO_results_HSC_vs_Prog.csv", row.names = FALSE)
@@ -1157,13 +1159,13 @@ enrichr_down_msigdb <- add_gene_count_ratio(as.data.frame(enrichr_down$MSigDB_Ha
 up_go_plot <- create_enrichment_plot(enrichr_up_go, "GO Biological Process", "Upregulated")
 ggsave("top_10_upregulated_GOBP_terms_with_padj_Prog_Prog_post_pre.jpeg", up_go_plot, width = 12, height = 8, device = "jpeg")
 ggsave("top_10_upregulated_GOBP_terms_with_padj_Prog_Prog_post_pre.pdf", up_go_plot, width = 12, height = 8, device = "pdf")
-print(up_go_plot)
+
 
 # Plot for KEGG (Upregulated)
 up_kegg_plot <- create_enrichment_plot(enrichr_up_kegg, "KEGG", "Upregulated")
 ggsave("top_10_upregulated_KEGG_terms_with_padj_Prog_Prog_post_pre.jpeg", up_kegg_plot, width = 12, height = 8, device = "jpeg")
 ggsave("top_10_upregulated_KEGG_terms_with_padj_Prog_Prog_post_pre.pdf", up_kegg_plot, width = 12, height = 8, device = "pdf")
-print(up_kegg_plot)
+
 
 # Plot for MSigDB (Upregulated)
 up_msigdb_plot <- create_enrichment_plot(enrichr_up_msigdb, "MSigDB", "Upregulated")
@@ -1181,17 +1183,11 @@ print(down_go_plot)
 down_kegg_plot <- create_enrichment_plot(enrichr_down_kegg, "KEGG", "Downregulated")
 ggsave("top_10_downregulated_KEGG_terms_with_padj_Prog_Prog_post_pre.jpeg", down_kegg_plot, width = 12, height = 8, device = "jpeg")
 ggsave("top_10_downregulated_KEGG_terms_with_padj_Prog_Prog_post_pre.pdf", down_kegg_plot, width = 12, height = 8, device = "pdf")
-print(down_kegg_plot)
 
 # Plot for MSigDB (Downregulated)
 down_msigdb_plot <- create_enrichment_plot(enrichr_down_msigdb, "MSigDB", "Downregulated")
 ggsave("top_10_downregulated_MSigDB_terms_with_padj_Prog_Prog_post_pre.jpeg", down_msigdb_plot, width = 12, height = 8, device = "jpeg")
 ggsave("top_10_downregulated_MSigDB_terms_with_padj_Prog_Prog_post_pre.pdf", down_msigdb_plot, width = 12, height = 8, device = "pdf")
-print(down_msigdb_plot)
-
-# Save enriched results as CSV for further analysis
-write.csv(enrichr_up_df, "enrichr_upregulated_results_Prog_Prog_post_pre.csv", row.names = FALSE)
-write.csv(enrichr_down_df, "enrichr_downregulated_results_Prog_Prog_post_pre.csv", row.names = FALSE)
 
 
 ```
@@ -1322,11 +1318,7 @@ ggsave("top_10_upregulated_KEGG_Prog_HSC_post_pre.jpeg", up_kegg_plot, width = 1
 ggsave("top_10_upregulated_KEGG_Prog_HSC_post_pre.pdf", up_kegg_plot, width = 12, height = 8, device = "pdf")
 print(up_kegg_plot)
 
-# Plot for MSigDB (Upregulated)
-up_msigdb_plot <- create_enrichment_plot(enrichr_up_msigdb, "MSigDB", "Upregulated")
-ggsave("top_10_upregulated_MSigDB_Prog_HSC_post_pre.jpeg", up_msigdb_plot, width = 12, height = 8, device = "jpeg")
-ggsave("top_10_upregulated_MSigDB_Prog_HSC_post_pre.pdf", up_msigdb_plot, width = 12, height = 8, device = "pdf")
-print(up_msigdb_plot)
+
 
 # Plot for GO Biological Process (Downregulated)
 down_go_plot <- create_enrichment_plot(enrichr_down_go,"GO Biological Process", "Downregulated")
@@ -1340,11 +1332,6 @@ ggsave("top_10_downregulated_KEGG_Prog_HSC_post_pre.jpeg", down_kegg_plot, width
 ggsave("top_10_downregulated_KEGG_Prog_HSC_post_pre.pdf", down_kegg_plot, width = 12, height = 8, device = "pdf")
 print(down_kegg_plot)
 
-# Plot for MSigDB (Downregulated)
-down_msigdb_plot <- create_enrichment_plot(enrichr_down_msigdb, "MSigDB", "Downregulated")
-ggsave("top_10_downregulated_MSigDB_Prog_HSC_post_pre.jpeg", down_msigdb_plot, width = 12, height = 8, device = "jpeg")
-ggsave("top_10_downregulated_MSigDB_Prog_HSC_post_pre.pdf", down_msigdb_plot, width = 12, height = 8, device = "pdf")
-print(down_msigdb_plot)
 
 
 ```
