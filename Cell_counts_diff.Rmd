@@ -1,0 +1,421 @@
+---
+title: "Cell_counts_diff"
+author: "illia"
+date: "2025-04-23"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggraph)
+library(purrr)
+library(gridExtra)
+```
+
+
+
+```{r}
+
+head(seurat_object@meta.data)
+# Беремо метаданні з обекту.
+metadata <- seurat_object@meta.data
+
+# Визначення здорових клітин
+healthy_ids <- c("BM1", "BM2", "BM3", "BM4", "BM5-34p", "BM5-34p38n")
+metadata$Health_Status <- ifelse(metadata$orig.ident %in% healthy_ids, "Healthy", "AML")
+
+# Підрахунок кількості клітин для кожного кластеру та клітини
+cell_counts <- metadata %>%
+  group_by(orig.ident, cell_type) %>%
+  summarise(n = n(), .groups = 'drop')
+
+# Урахування можливості, що в деяких клітинах, в кластерах не буде жодної клітини. 
+all_combinations <- expand.grid(
+  orig.ident = unique(metadata$orig.ident),
+  cell_type = unique(metadata$cell_type)
+)
+cell_counts_complete <- all_combinations %>%
+  left_join(cell_counts, by = c("orig.ident", "cell_type")) %>%
+  mutate(n = replace_na(n, 0))
+
+# Загальна кількість клітин на пацінта
+total_cells_per_patient <- cell_counts_complete %>%
+  group_by(orig.ident) %>%
+  summarise(total = sum(n))
+
+# Розрахунок віцотка клітин на кластер для кожного паціента
+cell_percents <- cell_counts_complete %>%
+  left_join(total_cells_per_patient, by = "orig.ident") %>%
+  mutate(percent = (n / total) * 100) %>%
+  mutate(Health_Status = ifelse(orig.ident %in% healthy_ids, "Healthy", "AML"))
+
+
+results <- list()
+
+for (cluster in unique(cell_percents$cell_type)) {
+  cluster_data <- cell_percents %>% filter(cell_type == cluster)
+  
+  healthy <- cluster_data %>% 
+    filter(Health_Status == "Healthy") %>% 
+    pull(percent)
+  aml <- cluster_data %>% 
+    filter(Health_Status == "AML") %>% 
+    pull(percent)
+  
+  # Якщо мало данних, то тест пропускаємо. 
+  if(length(healthy) < 2 | length(aml) < 2) {
+    results[[cluster]] <- data.frame(
+      Cluster = cluster,
+      P_value = NA,
+      Test_Used = "Insufficient data",
+      Shapiro_Healthy = NA,
+      Shapiro_AML = NA
+    )
+    next
+  }
+  
+  # Перевірка на нормальність
+  shapiro_healthy <- tryCatch(
+    if(length(healthy) >= 3) shapiro.test(healthy) 
+    else list(p.value = NA), 
+    error = function(e) list(p.value = NA)
+  )
+  
+  shapiro_aml <- tryCatch(
+    if(length(aml) >= 3) shapiro.test(aml) 
+    else list(p.value = NA), 
+    error = function(e) list(p.value = NA)
+  )
+  
+  # Вибір тесту
+  if(is.na(shapiro_healthy$p.value) | is.na(shapiro_aml$p.value)) {
+    test_used <- "Wilcoxon (non-normal)"
+    test <- suppressWarnings(wilcox.test(healthy, aml, exact = FALSE))
+    p_value <- test$p.value
+  } else if(shapiro_healthy$p.value >= 0.05 & shapiro_aml$p.value >= 0.05) {
+    test_used <- "t-test"
+    test <- t.test(healthy, aml)
+    p_value <- test$p.value
+  } else {
+    test_used <- "Wilcoxon"
+    test <- suppressWarnings(wilcox.test(healthy, aml, exact = FALSE))
+    p_value <- test$p.value
+  }
+  
+  results[[cluster]] <- data.frame(
+    Cluster = cluster,
+    P_value = p_value,
+    Test_Used = test_used,
+    Shapiro_Healthy = shapiro_healthy$p.value,
+    Shapiro_AML = shapiro_aml$p.value
+  )
+}
+results_table <- do.call(rbind, results) %>%
+  mutate(Adjusted_P_value = p.adjust(P_value, method = "BH"))
+
+```
+
+
+
+```{r}
+
+# Малюємо графік. 
+ggplot(cell_percents, 
+       aes(x = cell_type, 
+           y = percent, 
+           fill = Health_Status)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.shape = NA
+  ) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.2),
+    size = 1.5,
+    alpha = 0.6
+  ) +
+  scale_fill_manual(
+    values = c("Healthy" = "#9ECAE1", "AML" = "#DE77AE"),
+    name = "Group"
+  ) +
+  labs(
+    title = "Cell Percentage Distribution by Cluster",
+    x = "Cell Type",
+    y = "Percentage of Cells"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.title = element_text(size = 12),
+    legend.position = "right",
+    panel.grid.major.x = element_blank()
+  ) +
+  scale_x_discrete(limits = unique(cell_percents$cell_type)) # Порядок кластеров
+
+
+# Вывод таблицы с результатами
+print(results_table)
+```
+
+
+
+
+```{r }
+
+# Визначаємо групи. 
+healthy_ids <- c("BM1", "BM2", "BM3", "BM4", "BM5-34p", "BM5-34p38n")
+flt3_aml_ids <- c("AML210A-D0", "AML419A-D0", "AML997-D0", "AML329-D0", "AML328-D0")
+
+# Фільтруємо метаданні
+metadata_filtered <- seurat_object@meta.data %>%
+  filter(orig.ident %in% c(healthy_ids, flt3_aml_ids)) %>%
+  mutate(
+    Health_Status = case_when(
+      orig.ident %in% healthy_ids ~ "Healthy",
+      orig.ident %in% flt3_aml_ids ~ "FLT3_AML"
+    )
+  )
+
+# Перерахунок віцодку
+cell_counts_filtered <- metadata_filtered %>%
+  group_by(orig.ident, cell_type) %>%
+  summarise(n = n(), .groups = "drop")
+
+# Усі комбінації пациент-кластер
+all_combinations_filtered <- expand.grid(
+  orig.ident = unique(metadata_filtered$orig.ident),
+  cell_type = unique(metadata_filtered$cell_type)
+)
+
+cell_counts_complete_filtered <- all_combinations_filtered %>%
+  left_join(cell_counts_filtered, by = c("orig.ident", "cell_type")) %>%
+  mutate(n = replace_na(n, 0))
+
+# Загальна кількість клітин на паціента
+total_cells_per_patient_filtered <- cell_counts_complete_filtered %>%
+  group_by(orig.ident) %>%
+  summarise(total = sum(n))
+
+# Створюємо cell_percents_filtered
+cell_percents_filtered <- cell_counts_complete_filtered %>%
+  left_join(total_cells_per_patient_filtered, by = "orig.ident") %>%
+  mutate(percent = (n / total) * 100) %>%
+  mutate(Health_Status = ifelse(orig.ident %in% healthy_ids, "Healthy", "FLT3_AML"))
+
+
+results <- list()
+
+for (cluster in unique(cell_percents_filtered$cell_type)) {
+  cluster_data <- cell_percents_filtered %>% filter(cell_type == cluster)
+  
+  healthy <- cluster_data %>% filter(Health_Status == "Healthy") %>% pull(percent)
+  flt3 <- cluster_data %>% filter(Health_Status == "FLT3_AML") %>% pull(percent)
+  
+  # Початкові значення 
+  test_used <- "N/A"
+  p_value <- NA
+  shapiro_healthy <- NA
+  shapiro_flt3 <- NA
+  
+  # Перевірка мінімуму клітин
+  if(length(healthy) >= 2 & length(flt3) >= 2) {
+    # Перевірка нормальності
+    shapiro_healthy <- tryCatch(
+      if(length(healthy) >= 3) shapiro.test(healthy)$p.value else NA,
+      error = function(e) NA
+    )
+    
+    shapiro_flt3 <- tryCatch(
+      if(length(flt3) >= 3) shapiro.test(flt3)$p.value else NA,
+      error = function(e) NA
+    )
+    
+    # Вибір тесту
+    if(is.na(shapiro_healthy) | is.na(shapiro_flt3)) {
+      test <- suppressWarnings(wilcox.test(healthy, flt3, exact = FALSE))
+      test_used <- "Wilcoxon"
+      p_value <- test$p.value
+    } else if(shapiro_healthy > 0.05 & shapiro_flt3 > 0.05) {
+      test <- t.test(healthy, flt3)
+      test_used <- "t-test"
+      p_value <- test$p.value
+    } else {
+      test <- suppressWarnings(wilcox.test(healthy, flt3, exact = FALSE))
+      test_used <- "Wilcoxon"
+      p_value <- test$p.value
+    }
+  }
+  
+  results[[cluster]] <- data.frame(
+    Cluster = cluster,
+    N_Healthy = length(healthy),
+    N_FLT3 = length(flt3),
+    Shapiro_Healthy = shapiro_healthy,
+    Shapiro_FLT3 = shapiro_flt3,
+    Test_Used = test_used,
+    P_value = p_value
+  )
+}
+
+
+```
+
+```{r}
+
+# Створення таблиці
+results_table <- do.call(rbind, results) %>%
+  mutate(
+    Adjusted_P = p.adjust(P_value, method = "BH"),
+    across(where(is.numeric), ~round(., 4))
+  )
+library(knitr)
+kable(results_table, caption = "Результати аналізу")
+
+# Збереження
+write.csv(results_table, "FLT3_vs_Healthy_Results.csv", row.names = FALSE)
+
+# Побудова графіку. 
+ggplot(cell_percents_filtered, 
+       aes(x = cell_type, y = percent, fill = Health_Status)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("Healthy" = "#9ECAE1", "FLT3_AML" = "#DE77AE")) +
+  labs(title = "FLT3+ AML vs Healthy")
+```
+
+
+
+
+```{r}
+
+# --- Data Preparation ---
+# Extract metadata and define groups
+metadata <- seurat_object@meta.data %>%
+  mutate(
+    Health_Status = case_when(
+      Condition == "control" ~ "Control",
+      Condition == "pre_chemo" ~ "Pre_Chemo",
+      Condition == "post_chemo" ~ "Post_Chemo"
+    )
+  )
+
+# Calculate cell counts
+cell_counts <- metadata %>%
+  group_by(orig.ident, cell_type, Health_Status) %>%
+  summarise(n = n(), .groups = "drop")
+
+# Handle missing combinations
+all_combinations <- expand.grid(
+  orig.ident = unique(metadata$orig.ident),
+  cell_type = unique(metadata$cell_type),
+  Health_Status = unique(metadata$Health_Status)
+)
+
+cell_counts_complete <- all_combinations %>%
+  left_join(cell_counts, by = c("orig.ident", "cell_type", "Health_Status")) %>%
+  mutate(n = replace_na(n, 0))
+
+# Calculate percentages
+total_cells_per_patient <- cell_counts_complete %>%
+  group_by(orig.ident) %>%
+  summarise(total = sum(n))
+
+cell_percents <- cell_counts_complete %>%
+  left_join(total_cells_per_patient, by = "orig.ident") %>%
+  mutate(percent = (n / total) * 100)
+
+# --- Statistical Analysis ---
+results <- list()
+
+for (cluster in unique(cell_percents$cell_type)) {
+  cluster_data <- cell_percents %>% 
+    filter(cell_type == cluster) %>%
+    filter(Health_Status %in% c("Control", "Pre_Chemo", "Post_Chemo"))
+  
+  # Check if enough samples
+  if(nrow(cluster_data) < 3) {
+    results[[cluster]] <- data.frame(
+      Cluster = cluster,
+      Test_Used = "Insufficient data",
+      P_value = NA
+    )
+    next
+  }
+  
+  # Check normality for each group
+  shapiro_p <- list()
+  groups <- c("Control", "Pre_Chemo", "Post_Chemo")
+  
+  for (group in groups) {
+    data <- cluster_data %>% 
+      filter(Health_Status == group) %>% 
+      pull(percent)
+    
+    shapiro_p[[group]] <- if(length(data) >= 3) {
+      tryCatch(shapiro.test(data)$p.value, error = function(e) NA)
+    } else NA
+  }
+  
+  # Check if all groups are normal
+  all_normal <- all(sapply(shapiro_p, function(x) x > 0.05), na.rm = TRUE)
+  
+  # Perform appropriate test
+  if(all_normal) {
+    test <- aov(percent ~ Health_Status, data = cluster_data)
+    p_value <- summary(test)[[1]]$`Pr(>F)`[1]
+    test_used <- "ANOVA"
+  } else {
+    test <- kruskal.test(percent ~ Health_Status, data = cluster_data)
+    p_value <- test$p.value
+    test_used <- "Kruskal-Wallis"
+  }
+  
+  results[[cluster]] <- data.frame(
+    Cluster = cluster,
+    Test_Used = test_used,
+    P_value = p_value,
+    Shapiro_Control = shapiro_p$Control,
+    Shapiro_Pre = shapiro_p$Pre_Chemo,
+    Shapiro_Post = shapiro_p$Post_Chemo
+  )
+}
+
+```
+```{r}
+
+# --- Generate Results Table ---
+results_table <- do.call(rbind, results) %>%
+  mutate(
+    Adjusted_P = p.adjust(P_value, method = "BH"),
+    across(where(is.numeric), ~round(., 4))
+  )
+
+# Print formatted table
+kable(results_table, caption = "Statistical Results for Three Groups Comparison")
+
+# --- Visualization ---
+ggplot(cell_percents, 
+       aes(x = cell_type, y = percent, fill = Health_Status)) +
+  geom_boxplot(position = position_dodge(0.9)) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.2), 
+             size = 1.5, alpha = 0.6) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73")) +
+  labs(
+    title = "Cell Percentage Distribution by Treatment Group",
+    x = "Cell Type",
+    y = "Percentage of Cells"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_blank()
+  )
+
+# Save results
+write.csv(results_table, "Three_Groups_Analysis_Results.csv", row.names = FALSE)
+ggsave("Three_Groups_Comparison.png", width = 12, height = 8)
+```
+
+
